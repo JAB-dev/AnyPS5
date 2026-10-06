@@ -144,7 +144,7 @@ static void RenderSampler(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t s
 static void RenderVoice(Ngs2Voice& voice, const std::vector<Ngs2Voice*>& voices, std::uint32_t grain, std::uint32_t systemRate);
 
 static void MixPort(Ngs2Voice& voice, const Ngs2Voice& source, const Ngs2Port& port, std::uint32_t grain) {
-    const auto* matrix = port.matrix < 0 ? nullptr : &source.matrices[port.matrix];
+    const auto* matrix = port.matrix < 0 || source.matrices[port.matrix].empty() ? nullptr : &source.matrices[port.matrix];
     const std::size_t outputs = matrix == nullptr ? voice.channels : std::min<std::size_t>(voice.channels, matrix->size() / source.channels);
     for (std::size_t dst = 0; dst < outputs; dst++) {
         for (std::uint32_t src = 0; src < source.channels; src++) {

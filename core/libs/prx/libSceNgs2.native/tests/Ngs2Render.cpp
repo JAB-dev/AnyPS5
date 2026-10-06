@@ -221,6 +221,46 @@ static void TestLock() {
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
+static void TestUnsetMatrix() {
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 2);
+    const auto submixer = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SUBMIXER));
+    Control(submixer, SCE_NGS2_SUBMIXER_VOICE_PARAM_SETUP, Ngs2SubmixerVoiceSetupParam{{}, 2, 0});
+    Patch(submixer, master);
+    Event(submixer, SCE_NGS2_VOICE_EVENT_PLAY);
+
+    const std::vector<std::int16_t> pcm(Grain, 16384);
+    const auto sampler = Sampler(system, pcm, 0);
+    Patch(sampler, submixer);
+    Control(sampler, SCE_NGS2_VOICE_PARAM_PORT_MATRIX, Ngs2VoicePortMatrixParam{{}, 0, 0});
+    Control(sampler, SCE_NGS2_VOICE_PARAM_PORT_VOLUME, Ngs2VoicePortVolumeParam{{}, 0, 0.5f});
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+
+    std::vector<float> out(Grain * 2, -1.0f);
+    const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 2};
+    Require(sceNgs2SystemRender(system, &info, 1) == SCE_NGS2_OK);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == 0.25f && out[i * 2 + 1] == 0.0f);
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+
+    const auto stereoSystem = CreateSystem();
+    const auto stereoMaster = Mastering(stereoSystem, 2);
+    const auto stereo = Voice(CreateRack(stereoSystem, SCE_NGS2_RACK_ID_SAMPLER));
+    Control(stereo, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 2, 48000, 0, 0, 0}});
+    std::vector<std::int16_t> frames;
+    for (std::uint32_t i = 0; i < Grain; i++) {
+        frames.push_back(16384);
+        frames.push_back(8192);
+    }
+    const Ngs2WaveformBlock block{0, frames.size() * sizeof(std::int16_t), 0, 0, Grain, 0, 0};
+    Control(stereo, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, frames.data(), 0, 1, &block});
+    Patch(stereo, stereoMaster);
+    Control(stereo, SCE_NGS2_VOICE_PARAM_PORT_MATRIX, Ngs2VoicePortMatrixParam{{}, 0, 0});
+    Event(stereo, SCE_NGS2_VOICE_EVENT_PLAY);
+    Require(sceNgs2SystemRender(stereoSystem, &info, 1) == SCE_NGS2_OK);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == 0.5f && out[i * 2 + 1] == 0.25f);
+    Require(sceNgs2SystemDestroy(stereoSystem, nullptr) == SCE_NGS2_OK);
+}
+
 static void TestAllocator() {
     const Ngs2BufferAllocator allocator{Allocate, Release, 9};
     uintptr_t system = 0;
@@ -243,6 +283,7 @@ int main() {
     TestSampleRate();
     TestUserData();
     TestLock();
+    TestUnsetMatrix();
     TestAllocator();
     return 0;
 }
