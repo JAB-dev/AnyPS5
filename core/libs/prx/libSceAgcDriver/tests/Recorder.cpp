@@ -1692,8 +1692,8 @@ void importWatchTests(const Device& device) {
     using namespace AgcDriver::GuestMemory;
     const auto& context = device.GetContext();
 #ifdef _WIN32
-    Require(PrepareImportWatch(context) == ImportWatch::Unwatch, "Windows host imports stayed watched by default");
-    std::cout << "import watch decisions: Windows host imports use comparisons\n";
+    Require(PrepareImportWatch(context) == ImportWatch::Watch, "Windows host imports were compared by default");
+    std::cout << "import watch decisions: Windows host imports stay watched and settle\n";
 #else
     if (context.hostImportAlignment == 0 || !WriteWatched()) {
         std::cout << "host imports or write watching unavailable: import watch decisions not tested\n";

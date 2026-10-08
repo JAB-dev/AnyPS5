@@ -175,6 +175,13 @@ void RequireKeys(const std::uint8_t* keys, std::uint8_t expected, const std::str
     Require(found == KeyBytes, message);
 }
 
+void RepeatLateImportMarks(std::uint8_t* begin, std::size_t bytes) {
+    for (std::size_t offset = 0; offset < bytes; offset += 4096) {
+        auto* page = reinterpret_cast<volatile std::uint8_t*>(begin + offset);
+        *page = *page;
+    }
+}
+
 void Run(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
     bool watched = AgcDriver::GuestMemory::Watched(AddressOf(block), BlockBytes);
     auto* texels = block;
@@ -195,6 +202,9 @@ void Run(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
     std::lock_guard gpu(AgcDriver::GuestMemory::GpuMutex());
     Dispatch(device, WriteCode, writeData);
     Dispatch(device, CopyKeysCode, copyData);
+#ifdef _WIN32
+    if (watched) RepeatLateImportMarks(block, BlockBytes);
+#endif
     RequireKeys(copied, 0xff, "a kernel reading the keys after the first write of a 0000-cleared surface");
     Require(AgcDriver::Graphics::CurrentDccKeys(AddressOf(copied), SurfaceBytes) == DccKeys::Uncompressed, "the copied keys do not read uncompressed");
     const auto image = StorageTexture::FindPending(surface, SurfaceBytes);
@@ -332,6 +342,9 @@ void Run(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
 }
 
 int main() {
+#ifdef _WIN32
+    _putenv_s("APS5_IMPORT_SETTLE_MS", "60000");
+#endif
     try {
         std::optional<GuestBlock> block;
         std::optional<GuestBlock> watched;

@@ -11,6 +11,7 @@
 #endif
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -177,7 +178,60 @@ void CheckPrivateMappingReuse() {
 #endif
 }
 
+#ifdef _WIN32
+void CheckImportSettle() {
+    void* memory = AllocateWatched(3 * Block);
+    const auto base = reinterpret_cast<std::uint64_t>(memory);
+    auto* bytes = static_cast<volatile std::uint8_t*>(memory);
+    std::memset(memory, 0x11, 3 * Block);
+    CollectWritesUncached(base, 3 * Block);
+    Require(ImportWatched(base, Block, [] { return true; }, true) && ImportWatched(base + Block, Block, [] { return true; }, true), "the import callbacks failed");
+    std::array<std::uint64_t, 1> generations{TrackerGeneration()};
+    std::array<std::uint8_t, 1> changed{};
+    const auto state = [&](std::uint64_t address) {
+        Require(ChangedBlocks(address, Block, generations, changed), "a settling import is not tracked");
+        return changed[0];
+    };
+
+    bytes[8] = bytes[8];
+    bytes[Block + 8] = 0x22;
+    bytes[2 * Block + 8] = 0x22;
+    CollectWritesUncached(base, 3 * Block);
+    Require(state(base) == BlockMaybeWritten, "a page rewritten with its own bytes while the import settles was trusted as a CPU store");
+    Require(state(base + Block) == BlockWritten, "a CPU store that changed a settling import was not trusted");
+    Require(state(base + 2 * Block) == BlockWritten, "a CPU store next to a settling import was not trusted");
+
+    generations[0] = TrackerGeneration();
+    bytes[16] = bytes[16];
+    bytes[Block + 16] = 0x33;
+    Sleep(150);
+    CollectWritesUncached(base + 2 * Block, Block);
+    Require(state(base) == BlockMaybeWritten, "the closing walk trusted a page rewritten with its own bytes");
+    Require(state(base + Block) == BlockWritten, "the closing walk missed a CPU store that changed the import");
+
+    generations[0] = TrackerGeneration();
+    bytes[24] = bytes[24];
+    CollectWritesUncached(base, Block);
+    Require(state(base) == BlockWritten, "a page marked after the import settled was not trusted");
+
+    Require(ImportWatched(base + 2 * Block, Block, [] { return true; }), "the plain import callback failed");
+    generations[0] = TrackerGeneration();
+    bytes[2 * Block + 32] = bytes[2 * Block + 32];
+    CollectWritesUncached(base + 2 * Block, Block);
+    Require(state(base + 2 * Block) == BlockWritten, "an import watched without settling did not trust its marks");
+
+    Require(ImportWatched(base, Block, [] { return true; }, true), "the second import of the first block failed");
+    Unwatch(base, Block);
+    Require(!Watched(base, Block), "an unwatched settling import stayed watched");
+    GuestArena::GuestArenaReset_nid_postfix(memory, 3 * Block);
+    GuestArena::GuestArenaRelease_nid_postfix(memory, 3 * Block);
+}
+#endif
+
 int main() {
+#ifdef _WIN32
+    _putenv_s("APS5_IMPORT_SETTLE_MS", "100");
+#endif
     try {
         if (!WriteWatched()) {
             std::cout << "no write watching: skipped\n";
@@ -188,6 +242,7 @@ int main() {
         CheckUnwatch();
 #ifdef _WIN32
         CheckPrivateMappingReuse();
+        CheckImportSettle();
 #endif
     } catch (const std::exception& error) {
         std::cerr << "write tracking test failed: " << error.what() << "\n";

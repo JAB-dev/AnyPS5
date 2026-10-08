@@ -768,6 +768,24 @@ struct WriteTracker {
     std::vector<std::uint32_t> cpuBlocks;
     std::vector<std::uint32_t> writtenBlocks;
     WriteWatchCoverage coverage;
+    struct SettlingImport {
+        std::uint64_t first;
+        std::uint64_t stop;
+        std::chrono::steady_clock::time_point until;
+        std::vector<std::byte> bytes;
+        bool closing = false;
+    };
+    std::vector<SettlingImport> settling;
+    std::uint64_t settlingBytes = 0;
+    bool finishingSettled = false;
+
+    void dropSettling(std::uint64_t first, std::uint64_t stop) {
+        std::erase_if(settling, [&](const SettlingImport& entry) {
+            if (entry.closing || entry.stop <= first || stop <= entry.first) return false;
+            settlingBytes -= entry.bytes.size();
+            return true;
+        });
+    }
 #else
     static constexpr std::size_t LeafBlocks = std::size_t{1} << 16;
     static constexpr std::size_t LeafCount = std::size_t{1} << 15;
@@ -961,6 +979,7 @@ void watchPrivateMapping(std::uintptr_t address, std::size_t bytes, std::uint64_
     const auto lock = lockTracker(tracker);
     if (!tracker.watched || bytes == 0 || bytes > tracker.size || address < tracker.base || address - tracker.base > tracker.size - bytes) return;
     tracker.coverage.Restore(address, bytes, generation);
+    tracker.dropSettling(address, address + bytes);
     ++tracker.generation;
     for (auto block = tracker.blockOf(address); block <= tracker.blockOf(address + bytes - 1); ++block) {
         tracker.driverPieces.erase(block);
@@ -1019,7 +1038,64 @@ void stampWrittenRun(void* context, std::uintptr_t begin, std::uintptr_t end) {
 }
 #endif
 
+#ifdef _WIN32
+std::chrono::milliseconds importSettle() {
+    static const std::chrono::milliseconds settle{[] {
+        const char* text = std::getenv("APS5_IMPORT_SETTLE_MS");
+        return text != nullptr ? std::strtoull(text, nullptr, 10) : 1000ull;
+    }()};
+    return settle;
+}
+
+constexpr std::uint64_t MaxSettleSnapshotBytes = std::uint64_t{256} << 20;
+constexpr std::uint64_t MaxSettlingBytes = std::uint64_t{512} << 20;
+
+StampKind settlingKind(WriteTracker& tracker, std::uintptr_t page, StampKind kind) {
+    if (kind != StampKind::Cpu) return kind;
+    for (auto& entry : tracker.settling) {
+        if (page < entry.first || page >= entry.stop) continue;
+        auto* saved = entry.bytes.data() + (page - entry.first);
+        const auto* current = reinterpret_cast<const std::byte*>(page);
+        if (!Accessible(current, WritePageBytes)) return kind;
+        if (std::memcmp(saved, current, WritePageBytes) == 0) return StampKind::ImportWindow;
+        std::memcpy(saved, current, WritePageBytes);
+        return kind;
+    }
+    return kind;
+}
+#endif
+
+bool walkWrites(WriteTracker& tracker, std::uint64_t first, std::uint64_t stop, StampKind kind);
+
+#ifdef _WIN32
+void finishSettledImports(WriteTracker& tracker) {
+    const auto now = std::chrono::steady_clock::now();
+    bool expired = false;
+    for (auto& entry : tracker.settling) {
+        if (entry.until > now) continue;
+        entry.closing = true;
+        expired = true;
+    }
+    if (!expired) return;
+    tracker.finishingSettled = true;
+    for (std::size_t i = 0; i < tracker.settling.size(); ++i) {
+        const auto first = tracker.settling[i].first;
+        const auto stop = tracker.settling[i].stop;
+        if (tracker.settling[i].closing) walkWrites(tracker, first, stop, StampKind::Cpu);
+    }
+    tracker.finishingSettled = false;
+    std::erase_if(tracker.settling, [&](const WriteTracker::SettlingImport& entry) {
+        if (!entry.closing) return false;
+        tracker.settlingBytes -= entry.bytes.size();
+        return true;
+    });
+}
+#endif
+
 bool walkWrites(WriteTracker& tracker, std::uint64_t first, std::uint64_t stop, StampKind kind) {
+#ifdef _WIN32
+    if (kind == StampKind::Cpu && !tracker.settling.empty() && !tracker.finishingSettled) finishSettledImports(tracker);
+#endif
     ++tracker.generation;
 #ifdef _WIN32
     constexpr std::uint64_t page = 4096;
@@ -1040,8 +1116,9 @@ bool walkWrites(WriteTracker& tracker, std::uint64_t first, std::uint64_t stop, 
         if (count != 0) dirty = true;
         for (ULONG_PTR i = 0; i < count; ++i) {
             const auto page = reinterpret_cast<std::uintptr_t>(tracker.pages[i]);
-            tracker.stamp(tracker.blockOf(page), tracker.generation, kind);
-            if (kind != StampKind::Driver) tracker.noteCpuStore(page, page + WritePageBytes, tracker.generation);
+            const auto pageKind = settlingKind(tracker, page, kind);
+            tracker.stamp(tracker.blockOf(page), tracker.generation, pageKind);
+            if (pageKind != StampKind::Driver) tracker.noteCpuStore(page, page + WritePageBytes, tracker.generation);
         }
         if (count < tracker.pages.size()) break;
         cursor = reinterpret_cast<std::uintptr_t>(tracker.pages[count - 1]) + (granularity != 0 ? granularity : page);
@@ -1056,8 +1133,9 @@ bool walkWrites(WriteTracker& tracker, std::uint64_t first, std::uint64_t stop, 
             if (!GuestArena::GuestArenaCollectWrites_nid_postfix(cursor, static_cast<std::size_t>(stop - cursor), tracker.pages.data(), &count, true)) return false;
             for (ULONG_PTR i = 0; i < count; ++i) {
                 const auto page = reinterpret_cast<std::uintptr_t>(tracker.pages[i]);
-                tracker.stamp(tracker.blockOf(page), tracker.generation, kind);
-                if (kind != StampKind::Driver) tracker.noteCpuStore(page, page + WritePageBytes, tracker.generation);
+                const auto pageKind = settlingKind(tracker, page, kind);
+                tracker.stamp(tracker.blockOf(page), tracker.generation, pageKind);
+                if (pageKind != StampKind::Driver) tracker.noteCpuStore(page, page + WritePageBytes, tracker.generation);
             }
             if (count < tracker.pages.size()) break;
             cursor = reinterpret_cast<std::uintptr_t>(tracker.pages[count - 1]) + (granularity != 0 ? granularity : page);
@@ -1144,6 +1222,7 @@ namespace {
 void unwatchLocked(WriteTracker& tracker, std::uint64_t address, std::size_t bytes) {
     if (!tracker.watched) return;
 #ifdef _WIN32
+    tracker.dropSettling(address, address + bytes);
     if (tracker.coverage.Exclude(address, bytes, GuestArena::GuestArenaCommitGeneration_nid_postfix())) unwatchSerial.fetch_add(1, std::memory_order_release);
 #else
     if (GuestWriteWatch::GuestWriteWatchUnregister_nid_postfix(reinterpret_cast<const void*>(address), bytes)) unwatchSerial.fetch_add(1, std::memory_order_release);
@@ -1160,7 +1239,7 @@ void Unwatch(std::uint64_t address, std::size_t bytes) {
     unwatchLocked(tracker, address, bytes);
 }
 
-bool ImportWatched(std::uint64_t address, std::size_t bytes, const std::function<bool()>& import) {
+bool ImportWatched(std::uint64_t address, std::size_t bytes, const std::function<bool()>& import, bool settle) {
     if (bytes == 0 || bytes > std::numeric_limits<std::uint64_t>::max() - address) return import();
     auto& tracker = Tracker();
     auto lock = lockTracker(tracker);
@@ -1174,8 +1253,23 @@ bool ImportWatched(std::uint64_t address, std::size_t bytes, const std::function
     const auto stop = (address + bytes + page - 1) & ~(page - 1);
     const bool covered = tracker.covers(first, static_cast<std::size_t>(stop - first));
     const bool before = covered && walkWrites(tracker, first, stop, StampKind::Cpu);
+#ifdef _WIN32
+    const bool settles = settle && before && importSettle().count() != 0 && stop - first <= MaxSettleSnapshotBytes && tracker.settlingBytes + (stop - first) <= MaxSettlingBytes;
+    std::vector<std::byte> snapshot;
+    if (settles) snapshot.assign(reinterpret_cast<const std::byte*>(first), reinterpret_cast<const std::byte*>(stop));
+#else
+    static_cast<void>(settle);
+#endif
     if (!import()) return false;
     if (!before || !walkWrites(tracker, first, stop, StampKind::ImportWindow)) unwatchLocked(tracker, first, static_cast<std::size_t>(stop - first));
+#ifdef _WIN32
+    else if (settles) {
+        tracker.settlingBytes += stop - first;
+        tracker.settling.push_back({first, stop, std::chrono::steady_clock::now() + importSettle(), std::move(snapshot)});
+    } else if (settle) {
+        unwatchLocked(tracker, first, static_cast<std::size_t>(stop - first));
+    }
+#endif
     return true;
 }
 

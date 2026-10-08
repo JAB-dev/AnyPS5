@@ -136,6 +136,7 @@ struct HostImports {
     VkDevice watchDevice = VK_NULL_HANDLE;
     bool unwatchImports = false;
     bool unwatchDmaBufImports = false;
+    bool settleImports = false;
 };
 
 HostImports& Imports() {
@@ -268,7 +269,6 @@ const char* createImport(const Context& context, HostImport& entry, VkResult& fa
     return step;
 }
 
-#ifndef _WIN32
 enum class ImportWatchRequest : std::uint8_t { Probe, Watch, Unwatch };
 
 ImportWatchRequest importWatchRequest() {
@@ -281,15 +281,19 @@ ImportWatchRequest importWatchRequest() {
     }();
     return request;
 }
-#endif
 
 void decideImportWatch(const Context& context, HostImports& state) {
     if (state.watchDevice == context.device) return;
 #ifdef _WIN32
     state.watchDevice = context.device;
-    state.unwatchImports = true;
+    const auto request = importWatchRequest();
+    state.unwatchImports = request == ImportWatchRequest::Unwatch;
     state.unwatchDmaBufImports = false;
-    if (context.hostImportAlignment != 0 && GuestMemory::WriteWatched()) std::fprintf(stderr, "[write-watch] host imports are compared on Windows because driver writes can arrive after the import window\n");
+    state.settleImports = request == ImportWatchRequest::Probe;
+    if (context.hostImportAlignment == 0 || !GuestMemory::WriteWatched()) return;
+    if (state.unwatchImports) std::fprintf(stderr, "[write-watch] host imports are compared, not watched (APS5_WRITE_WATCH_IMPORTS=unwatch)\n");
+    else if (state.settleImports) std::fprintf(stderr, "[write-watch] host imports stay watched; pages marked written while an import settles are compared, not trusted\n");
+    else std::fprintf(stderr, "[write-watch] host imports stay watched without settling (APS5_WRITE_WATCH_IMPORTS=watch)\n");
 #else
     const auto request = importWatchRequest();
     state.watchDevice = context.device;
@@ -407,11 +411,12 @@ const HostImport* importAllocation(const Context& context, HostImports& state, s
     decideImportWatch(context, state);
     VkResult result = VK_SUCCESS;
     const char* step = nullptr;
+    const bool settle = state.settleImports && !state.unwatchImports;
     GuestMemory::ImportWatched(base, bytes, [&] {
         step = createImport(context, entry, result);
         return step == nullptr;
-    });
-    entry.unwatched = step == nullptr && (entry.dmaBuf ? state.unwatchDmaBufImports : state.unwatchImports);
+    }, settle);
+    entry.unwatched = step == nullptr && (entry.dmaBuf ? state.unwatchDmaBufImports : state.unwatchImports || (settle && !GuestMemory::Watched(base, bytes)));
     if (entry.unwatched) GuestMemory::Unwatch(base, bytes);
     if (step != nullptr) {
 #ifdef _WIN32
