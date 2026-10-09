@@ -779,6 +779,16 @@ struct WriteTracker {
     std::uint64_t settlingBytes = 0;
     bool finishingSettled = false;
 
+    void settlingStored(std::uint64_t first, std::uint64_t stop) {
+        for (auto& entry : settling) {
+            const auto begin = std::max(first, entry.first) & ~std::uint64_t{4095};
+            const auto end = std::min(stop, entry.stop);
+            for (auto page = begin; page < end; page += 4096) {
+                if (Accessible(reinterpret_cast<const void*>(page), 4096)) std::memcpy(entry.bytes.data() + (page - entry.first), reinterpret_cast<const void*>(page), 4096);
+            }
+        }
+    }
+
     void dropSettling(std::uint64_t first, std::uint64_t stop) {
         std::erase_if(settling, [&](const SettlingImport& entry) {
             if (entry.closing || entry.stop <= first || stop <= entry.first) return false;
@@ -1320,6 +1330,9 @@ std::uint64_t storeOwn(std::uint64_t address, std::size_t bytes, const std::func
     if (bytes == 0) return 0;
     const auto stampStored = [](WriteTracker& tracker, std::pair<std::uint64_t, std::uint64_t> stored) -> std::uint64_t {
         if (stored.second <= stored.first || !tracker.watched || !tracker.covers(stored.first, static_cast<std::size_t>(stored.second - stored.first))) return 0;
+#ifdef _WIN32
+        tracker.settlingStored(stored.first, stored.second);
+#endif
         ++tracker.generation;
         for (auto block = tracker.blockOf(stored.first); block <= tracker.blockOf(stored.second - 1); ++block) {
             tracker.stamp(block, tracker.generation, StampKind::Driver);

@@ -221,6 +221,16 @@ void CheckImportSettle() {
     Require(state(base + 2 * Block) == BlockWritten, "an import watched without settling did not trust its marks");
 
     Require(ImportWatched(base, Block, [] { return true; }, true), "the second import of the first block failed");
+    StoreOwnBytes(base + 8, 1, [&] { bytes[8] = 0x44; });
+    generations[0] = TrackerGeneration();
+    bytes[8] = bytes[8];
+    CollectWritesUncached(base, Block);
+    Require(state(base) == BlockMaybeWritten, "a late mark over the driver's own store read as a CPU store");
+    Require(MarkWritten(base + 2 * 4096, 4096) != 0, "a GPU write into a settling import was not stamped");
+    generations[0] = TrackerGeneration();
+    bytes[2 * 4096 + 8] = 0x55;
+    CollectWritesUncached(base, Block);
+    Require(state(base) == BlockWritten, "a CPU store after a GPU write into a settling import was not trusted");
     Unwatch(base, Block);
     Require(!Watched(base, Block), "an unwatched settling import stayed watched");
     GuestArena::GuestArenaReset_nid_postfix(memory, 3 * Block);
