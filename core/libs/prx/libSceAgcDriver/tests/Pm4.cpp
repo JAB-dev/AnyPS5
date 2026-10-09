@@ -334,6 +334,10 @@ void testMemory() {
     check(data[0] == 61 && data[1] == 62, "WRITE_DATA with a cache policy failed");
     execute(state, makePacket(0x37, {0x40100500, low(data.data()), high(data.data()), 81, 82}));
     check(data[0] == 81 && data[1] == 82, "WRITE_DATA to memory from the graphics queue failed");
+    execute(state, makePacket(0x37, {0x06100300, low(data.data()), high(data.data()), 83, 84}));
+    check(data[0] == 83 && data[1] == 84, "WRITE_DATA with the Agc destination 6 failed");
+    expectFailure([&] { AgcDriver::Pm4::Validate(makePacket(0x37, {0x40000300, low(data.data()), high(data.data()), 91}), 0); }, "GDS destination");
+    expectFailure([&] { AgcDriver::Pm4::Validate(makePacket(0x37, {0x00000300, low(data.data()), high(data.data()), 91}), 1); }, "GDS destination");
     expectFailure([&] { AgcDriver::Pm4::Validate(makePacket(0x37, {0x08000100, low(data.data()), high(data.data()), 71}), 0); }, "reserved");
     expectFailure([&] { AgcDriver::Pm4::Validate(makePacket(0x37, {0x80000100, low(data.data()), high(data.data()), 51}), 0); }, "engine");
     execute(state, makePacket(0x81, {4, 31, 32}));
