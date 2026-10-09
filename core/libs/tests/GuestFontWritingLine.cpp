@@ -104,7 +104,6 @@ int main() {
     Require(StepIs(sceFontWritingLineRefersRenderStep(line), 16.0f, runC, nullptr));
     Require(sceFontWritingLineRefersRenderStep(line) == nullptr);
 
-    Require(Throws([&] { sceFontWritingLineWritesOrder(line, 1, &runA, nullptr); }));
     Require(Throws([&] { sceFontWritingLineWritesOrder(line, 0, nullptr, nullptr); }));
     Require(Throws([&] { sceFontWritingLineGetRenderMetrics(line, nullptr); }));
     Require(sceFontWritingLineGetRenderMetrics(line, &metrics) == SCE_FONT_OK && metrics.advanceX == 20.0f);
@@ -112,7 +111,7 @@ int main() {
     Require(sceFontWritingLineClear(line) == SCE_FONT_OK);
     Require(sceFontWritingLineRefersRenderStep(line) == nullptr);
     Require(Throws([&] { sceFontWritingLineGetRenderMetrics(line, &metrics); }));
-    Require(sceFontWritingLineWritesOrder(line, 0, &runB, &ordererB) == SCE_FONT_OK);
+    Require(sceFontWritingLineWritesOrder(line, 0x800000faull, &runB, &ordererB) == SCE_FONT_OK);
     Require(sceFontWritingLineGetRenderMetrics(line, &metrics) == SCE_FONT_OK && Same(metrics, runB));
     Require(StepIs(sceFontWritingLineRefersRenderStep(line), 0.0f, runB, &ordererB));
 

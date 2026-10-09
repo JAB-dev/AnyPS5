@@ -81,9 +81,8 @@ int APS5_VABI sceFontWritingLineClear(void* writingLine) {
     return SCE_FONT_OK;
 }
 
-int APS5_VABI sceFontWritingLineWritesOrder(void* writingLine, std::uint64_t writingAttribute, const FontWritingMetrics* writingMetrics, void* writingOrderer) {
+int APS5_VABI sceFontWritingLineWritesOrder(void* writingLine, std::uint64_t, const FontWritingMetrics* writingMetrics, void* writingOrderer) {
     auto* line = GetLine(__func__, writingLine);
-    if (writingAttribute != 0) Unsupported(__func__, "writing attribute " + std::to_string(writingAttribute) + " is not modelled");
     if (!writingMetrics) Unsupported(__func__, "null writing metrics are not modelled");
     const FontWritingMetrics& order = *writingMetrics;
     const float pen = line->metrics.advanceX;
