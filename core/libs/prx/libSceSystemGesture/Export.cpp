@@ -12,10 +12,8 @@ static constexpr int SCE_SYSTEM_GESTURE_ERROR_INDEX_OUT_OF_ARRAY = static_cast<i
 extern "C" {
 
 int APS5_VABI sceSystemGestureAppendTouchRecognizer(int32_t gesture_handle, SystemGestureTouchRecognizer* recognizer) {
- (void)gesture_handle;
- (void)recognizer;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    if (gesture_handle != GESTURE_HANDLE) return SCE_SYSTEM_GESTURE_ERROR_INVALID_HANDLE;
+    return recognizer ? 0 : SCE_SYSTEM_GESTURE_ERROR_INVALID_ARGUMENT;
 }
 
 int APS5_VABI sceSystemGestureClose(int32_t gesture_handle) {
@@ -118,10 +116,8 @@ int32_t APS5_VABI sceSystemGestureOpen(int32_t input_type, const void* param) {
 }
 
 int APS5_VABI sceSystemGestureRemoveTouchRecognizer(int32_t gesture_handle, SystemGestureTouchRecognizer* recognizer) {
- (void)gesture_handle;
- (void)recognizer;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    if (gesture_handle != GESTURE_HANDLE) return SCE_SYSTEM_GESTURE_ERROR_INVALID_HANDLE;
+    return recognizer ? 0 : SCE_SYSTEM_GESTURE_ERROR_INVALID_ARGUMENT;
 }
 
 int APS5_VABI sceSystemGestureResetPrimitiveTouchRecognizer(int32_t gesture_handle) {
@@ -138,9 +134,7 @@ int APS5_VABI sceSystemGestureResetTouchRecognizer(int32_t gesture_handle, Syste
 }
 
 int APS5_VABI sceSystemGestureUpdateAllTouchRecognizer(int32_t gesture_handle) {
- (void)gesture_handle;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    return gesture_handle == GESTURE_HANDLE ? 0 : SCE_SYSTEM_GESTURE_ERROR_INVALID_HANDLE;
 }
 
 int APS5_VABI sceSystemGestureUpdatePrimitiveTouchRecognizer(int32_t gesture_handle, const void* param) {
