@@ -365,6 +365,12 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
                     size(2);
                     require(eventIndex == 0, "invalid VGT_FLUSH event index");
                     break;
+                case 0x38:
+                    graphics();
+                    size(4);
+                    require(eventIndex == 1, "invalid pixel pipe statistics control event index");
+                    require((packet[2] & 7u) == 0 && ((packet[2] >> 3u) & 0x3fu) == 0 && ((packet[2] >> 9u) & 3u) == 2 && (packet[2] >> 11u) == 0xffffu && packet[3] == 0, "pixel pipe statistics control other than the Z-pass counter of 16 render backends at a 128-bit stride is not implemented");
+                    break;
                 case 0x39:
                     graphics();
                     size(4);
