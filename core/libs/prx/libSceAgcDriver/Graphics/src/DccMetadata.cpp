@@ -344,6 +344,7 @@ bool LayoutFor(VkFormat format, Layout& layout) {
         case VK_FORMAT_R16G16_UINT: layout = {2, {16, 16}, Kind::Uint}; return true;
         case VK_FORMAT_R16G16_SINT: layout = {2, {16, 16}, Kind::Sint}; return true;
         case VK_FORMAT_R16G16_SFLOAT: layout = {2, {16, 16}, Kind::Float}; return true;
+        case VK_FORMAT_B10G11R11_UFLOAT_PACK32: layout = {3, {11, 11, 10}, Kind::Float}; return true;
         case VK_FORMAT_A2B10G10R10_UNORM_PACK32: case VK_FORMAT_A2R10G10B10_UNORM_PACK32: layout = {4, {10, 10, 10, 2}, Kind::Unorm}; return true;
         case VK_FORMAT_A2B10G10R10_UINT_PACK32: layout = {4, {10, 10, 10, 2}, Kind::Uint}; return true;
         case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB: layout = {4, {8, 8, 8, 8}, Kind::Unorm}; return true;
@@ -370,7 +371,10 @@ std::uint64_t One(Kind kind, std::uint32_t bits) {
     switch (kind) {
         case Kind::Unorm: case Kind::Uint: return bits >= 64 ? ~0ull : (1ull << bits) - 1u;
         case Kind::Snorm: case Kind::Sint: return (1ull << (bits - 1u)) - 1u;
-        case Kind::Float: return bits == 16 ? 0x3c00u : 0x3f800000u;
+        case Kind::Float:
+            if (bits == 10) return 0x1e0u;
+            if (bits == 11) return 0x3c0u;
+            return bits == 16 ? 0x3c00u : 0x3f800000u;
     }
     return 0;
 }
