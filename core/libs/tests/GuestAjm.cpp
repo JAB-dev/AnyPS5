@@ -16,6 +16,7 @@
 #endif
 
 extern "C" {
+const char* APS5_VABI sceAjmStrError(int);
 int APS5_VABI sceAjmInitialize(std::int64_t, std::uint32_t*);
 int APS5_VABI sceAjmFinalize(std::uint32_t);
 int APS5_VABI sceAjmDecAt9ParseConfigData(const void*, AjmDecAt9ConfigDataInfo*);
@@ -46,6 +47,40 @@ int APS5_VABI sceAjmBatchJobDecodeSplit(AjmBatchInfo*, std::uint32_t, const AjmB
 static void Require(bool value) { if (!value) std::abort(); }
 
 namespace {
+
+void TestStrError() {
+    const char* const messages[] = {
+        "context does not exist",
+        "instance does not exist",
+        "batch does not exist",
+        "invalid parameter",
+        "not enough memory",
+        "not enough resources",
+        "codec is not supported",
+        "codec is already registered in the context",
+        "codec is not registered in the context",
+        "wrong revision in the flags",
+        "flag is not supported",
+        "busy",
+        "priority is invalid",
+        "in progress",
+        "operation cannot be performed at the moment",
+        "malformed batch",
+        "error at job creation",
+        "invalid opcode",
+        "priority violation",
+        "buffer is too big",
+        "invalid address",
+        "batch was cancelled",
+    };
+    Require(std::strcmp(sceAjmStrError(0), "ok") == 0);
+    for (std::uint32_t index = 0; index < sizeof(messages) / sizeof(messages[0]); ++index)
+        Require(std::strcmp(sceAjmStrError(static_cast<int>(0x80930002u + index)), messages[index]) == 0);
+    Require(std::strcmp(sceAjmStrError(static_cast<int>(0x80930001u)), "(unknown)") == 0);
+    Require(std::strcmp(sceAjmStrError(static_cast<int>(0x80930018u)), "(unknown)") == 0);
+    Require(std::strcmp(sceAjmStrError(1), "(unknown)") == 0);
+}
+
 
 const std::uint8_t MP3_MONO[] = {
     0xFF, 0xFB, 0x14, 0xC4, 0x00, 0x00, 0x03, 0xB0, 0x21, 0x5E, 0xF4, 0x30, 0x80, 0x30, 0x98, 0x88, 0xA9, 0x83, 0x34, 0x70, 0x00, 0x18, 0x89, 0xCB,
@@ -1240,6 +1275,7 @@ int main() {
         nullBuffersThrow = true;
     }
     Require(nullBuffersThrow && batchInfo.offset == 0);
+    TestStrError();
     TestMp3ParseFrame();
     TestMp3ParseOfl();
     TestMp3(context);
