@@ -1035,6 +1035,20 @@ struct WriteTracker {
             }
             return true;
         }
+
+        bool coversPossible(std::uint32_t begin, std::uint32_t end, std::uint64_t generation) const {
+            if (generation == 0 || begin >= end || possibleDropped > generation) return false;
+            if (possibleWhole > generation) return true;
+            while (begin < end) {
+                auto covered = begin;
+                for (const auto& piece : possiblePieces) {
+                    if (piece.generation > generation && piece.begin <= begin && piece.end > covered) covered = piece.end;
+                }
+                if (covered == begin) return false;
+                begin = covered;
+            }
+            return true;
+        }
     };
     std::unordered_map<std::uint64_t, DriverPieces> driverPieces;
 
@@ -1043,10 +1057,15 @@ struct WriteTracker {
     };
     std::unordered_map<std::uint64_t, CpuPages> cpuPages;
     std::unordered_map<std::uint64_t, CpuPages> walkPages;
+    std::unordered_map<std::uint64_t, CpuPages> storedPages;
     std::map<std::uint64_t, std::uint32_t> refused;
 
     void noteCpuStore(std::uint64_t begin, std::uint64_t end, std::uint32_t stampGeneration) {
         notePages(cpuPages, begin, end, stampGeneration);
+    }
+
+    void noteStoredPage(std::uint64_t begin, std::uint64_t end, std::uint32_t stampGeneration) {
+        notePages(storedPages, begin, end, stampGeneration);
     }
 
     void noteWalkStore(std::uint64_t begin, std::uint64_t end, std::uint32_t stampGeneration) {
@@ -1412,6 +1431,7 @@ struct StampRuns {
     StampKind kind;
     std::size_t stamped = 0;
     const WindowCopy* window = nullptr;
+    bool stored = true;
 };
 
 void stampWrittenRun(void* context, std::uintptr_t begin, std::uintptr_t end) {
@@ -1423,6 +1443,11 @@ void stampWrittenRun(void* context, std::uintptr_t begin, std::uintptr_t end) {
     const auto generation = tracker.generation.load(std::memory_order_relaxed);
     if (kind != StampKind::Driver) tracker.noteCpuStore(begin, end, generation);
     else tracker.noteWalkStore(begin, end, generation);
+    if (kind == StampKind::Cpu && runs.stored) {
+        for (auto page = begin; page < end; page += WritePageBytes) {
+            if (runs.window == nullptr || !runs.window->Holds(page)) tracker.noteStoredPage(page, page + WritePageBytes, generation);
+        }
+    }
     if (runs.window != nullptr) {
         for (auto page = begin; page < end; page += WritePageBytes) tracker.stamp(tracker.blockOf(page), generation, runs.window->Holds(page) ? StampKind::ImportWindow : kind);
     } else {
@@ -1475,6 +1500,7 @@ void noteRefusedWalk(WriteTracker& tracker, std::uint64_t first, std::uint64_t s
         }
     };
     StampRuns runs{tracker, StampKind::Cpu};
+    runs.stored = false;
     pagesOf(&GuestArena::GuestArenaTakeUnreportedPages_nid_no_patch, [&](std::uintptr_t page) { stampWrittenRun(&runs, page, page + WritePageBytes); });
     const auto generation = tracker.generation.load(std::memory_order_relaxed);
     pagesOf(&GuestArena::GuestArenaComparedPages_nid_no_patch, [&](std::uintptr_t page) { tracker.refused[tracker.blockOf(page)] = generation; });
@@ -2101,6 +2127,31 @@ std::uint64_t UntrackedHint(std::uint64_t address, std::size_t bytes) {
     static_cast<void>(bytes);
     return 0;
 #endif
+}
+
+bool OverwrittenSince(std::uint64_t address, std::size_t bytes, std::uint64_t generation) {
+    if (generation == 0 || bytes == 0 || bytes > std::numeric_limits<std::uint64_t>::max() - address) return false;
+    if (CollectWritesUncached(address, bytes) == 0) return false;
+    auto& tracker = Tracker();
+    const auto lock = lockTracker(tracker);
+    if (!tracker.watched || !tracker.covers(address, bytes)) return false;
+    const auto end = address + bytes;
+    if (tracker.refusedSince(address, end, generation)) return false;
+    for (auto block = tracker.blockOf(address); block <= tracker.blockOf(end - 1); ++block) {
+        if (tracker.stampOf(block) <= generation) return false;
+        const auto begin = tracker.blockBegin(block);
+        const auto from = std::max(address, begin) - begin;
+        const auto to = std::min<std::uint64_t>(end, begin + WriteBlockBytes) - begin;
+        const auto pages = tracker.storedPages.find(block);
+        const auto pieces = tracker.driverPieces.find(block);
+        for (auto page = from / WritePageBytes; page <= (to - 1) / WritePageBytes; ++page) {
+            if (pages != tracker.storedPages.end() && pages->second.pages[page] > generation) continue;
+            const auto pageFrom = static_cast<std::uint32_t>(std::max<std::uint64_t>(from, page * WritePageBytes));
+            const auto pageTo = static_cast<std::uint32_t>(std::min<std::uint64_t>(to, (page + 1) * WritePageBytes));
+            if (pieces == tracker.driverPieces.end() || (!pieces->second.covers(pageFrom, pageTo, generation) && !pieces->second.coversPossible(pageFrom, pageTo, generation))) return false;
+        }
+    }
+    return true;
 }
 
 bool UnchangedSinceCollected(std::uint64_t address, std::size_t bytes, std::uint64_t generation) {
