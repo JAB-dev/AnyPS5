@@ -1049,6 +1049,135 @@ void CheckUnwrittenGuestAccess(Context context, VkFormat format, std::uint32_t f
     std::printf("Native depth format=%u samples=%u: guest access retired the unwritten surface and refused the written one\n", static_cast<std::uint32_t>(format), fragments);
 }
 
+struct OverwriteFixture {
+    OverwriteFixture(Context context, std::uint32_t fragments, std::size_t metadataOffset)
+        : extent(PagedExtent()), bytes(static_cast<std::size_t>(MultisampledDepthBytes_nid_no_patch(extent, 4u, fragments))), metadataBytes(static_cast<std::size_t>(HtileMetadataBytes(extent))),
+          memory(bytes), metadata(metadataOffset + 65536u + metadataBytes), target{memory.Address(), 0u, extent, VK_FORMAT_D32_SFLOAT, 0.0f, 0u, metadata.Address() + metadataOffset, false, fragments}, recorder(context), context(context) {
+        std::memset(memory.Data(), 0x3c, bytes);
+        std::memset(metadata.Data() + metadataOffset, 0, metadataBytes);
+        target.depthSwizzle = 24u;
+        target.iterate256 = target.htilePipeAligned = target.htileDepthOnly = true;
+        recorder.Activate();
+        Require(DepthSurfaceView(context, target) != VK_NULL_HANDLE && Resident(), "written native depth fixture has no resident owner");
+        AgcDriver::GuestMemory::CollectWritesUncached(metadata.Address(), metadataOffset + 65536u + metadataBytes);
+        NoteDepthSurfaceWrite(context, target);
+    }
+    ~OverwriteFixture() {
+        recorder.Sync();
+        ClearCachedTextures(context.device);
+        ClearDepthSurfaces(context.device);
+    }
+    static VkExtent2D PagedExtent() {
+        VkExtent2D extent{64u, 64u};
+        while (HtileMetadataBytes(extent) < 0x3000u) extent = {extent.width * 2u, extent.height * 2u};
+        return extent;
+    }
+    bool Resident() const { return HasResidentDepthGuards_nid_no_patch() && DepthSurfaceAt(target.address); }
+    VkExtent2D extent;
+    std::size_t bytes;
+    std::size_t metadataBytes;
+    TargetMemory memory;
+    TargetMemory metadata;
+    DepthTarget target;
+    Recorder recorder;
+    Context context;
+};
+
+void CheckOverwrittenRangeRead(Context context, std::uint32_t fragments) {
+    OverwriteFixture fixture(context, fragments, 0u);
+    const auto& target = fixture.target;
+    const auto read = target.htileAddress + 0x1030u;
+    const std::size_t readBytes = 0x1800u;
+    const auto vertexRead = [&] { RequireNoMultisampleTarget(read, readBytes, "a vertex buffer read"); };
+    TargetRefuses(vertexRead, "sample-preserving guest publication");
+    Require(fixture.Resident(), "a refused read of a never overwritten range retired the owner");
+    std::memset(fixture.metadata.Data() + 0x1030u, 0x11, 0x2000u - 0x1030u);
+    TargetRefuses(vertexRead, "sample-preserving guest publication");
+    Require(fixture.Resident(), "a refused read of a partly overwritten range retired the owner");
+    fixture.metadata.Data()[0x2800u] = std::byte{0x22};
+    vertexRead();
+    Require(fixture.Resident(), "a read of overwritten HTILE bytes retired the depth plane too");
+    std::vector<std::byte> guest(readBytes);
+    AgcDriver::GuestMemory::Read(read, std::span(guest));
+    for (std::size_t offset = 0u; offset < readBytes; ++offset) {
+        const auto at = 0x1030u + offset;
+        const auto expected = at < 0x2000u ? std::byte{0x11} : at == 0x2800u ? std::byte{0x22} : std::byte{0};
+        Require(guest[offset] == expected, "a read of the overwritten bytes did not return the guest bytes");
+    }
+    TargetRefuses([&] { RequireNoMultisampleTarget(target.address, 16u, "a vertex buffer read"); }, "sample-preserving guest publication");
+    Require(fixture.Resident(), "a refused read of the never overwritten depth plane retired the owner");
+    std::memset(fixture.metadata.Data(), 0x77, fixture.metadataBytes);
+    RequireNoResidentDepthRead_nid_no_patch(target.htileAddress, fixture.metadataBytes);
+    Require(fixture.Resident(), "a read of the whole overwritten HTILE range retired the depth plane too");
+    std::memset(fixture.memory.Data(), 0x66, fixture.bytes);
+    RequireNoResidentDepthRead_nid_no_patch(target.address, fixture.bytes);
+    Require(!DepthSurfaceAt(target.address) && !HasResidentDepthGuards_nid_no_patch(), "reads of every overwritten range left the owner or its guards resident");
+    std::printf("Native depth samples=%u: a read of a never or partly overwritten HTILE range refused, overwritten bytes were read as the guest's and the owner retired once every range was\n", fragments);
+}
+
+void CheckDriverStoredRangeRead(Context context, std::uint32_t fragments) {
+    OverwriteFixture fixture(context, fragments, 0u);
+    const auto& target = fixture.target;
+    const auto read = target.htileAddress + 0x1000u;
+    const std::size_t readBytes = 0x2000u;
+    const auto vertexRead = [&] { RequireNoMultisampleTarget(read, readBytes, "a vertex buffer read"); };
+    TargetRefuses(vertexRead, "sample-preserving guest publication");
+    std::vector<std::byte> original(readBytes, std::byte{0});
+    std::vector<std::byte> current = original;
+    current[0x10u] = std::byte{0x41};
+    current[0x1000u + 0x10u] = std::byte{0x42};
+    AgcDriver::GuestMemory::WriteChanged(read + 0x800u, std::span(current).first(0x1800u), std::span(original).first(0x1800u));
+    TargetRefuses(vertexRead, "sample-preserving guest publication");
+    Require(fixture.Resident(), "a refused read over bytes before a changed-bytes write retired the owner");
+    std::fill(current.begin(), current.end(), std::byte{0});
+    current.front() = std::byte{0x44};
+    current.back() = std::byte{0x45};
+    AgcDriver::GuestMemory::WriteChanged(read, current, original);
+    vertexRead();
+    std::vector<std::byte> stored(readBytes, std::byte{0x43});
+    AgcDriver::GuestMemory::StoreOwnBytes(read, std::span(stored));
+    vertexRead();
+    std::vector<std::byte> guest(readBytes);
+    AgcDriver::GuestMemory::Read(read, std::span(guest));
+    Require(guest == stored, "a read over bytes the driver stored did not return them");
+    std::printf("Native depth samples=%u: bytes the driver stored count as overwritten, and a changed-bytes write counts from its first to its last changed byte\n", fragments);
+}
+
+void CheckPossiblyWrittenRangeRead(Context context, std::uint32_t fragments) {
+    OverwriteFixture fixture(context, fragments, 0u);
+    const auto read = fixture.target.htileAddress + 0x1000u;
+    const auto vertexRead = [&] { RequireNoMultisampleTarget(read, 0x2000u, "a vertex buffer read"); };
+    TargetRefuses(vertexRead, "sample-preserving guest publication");
+    AgcDriver::GuestMemory::MarkPossiblyWritten(read + 0x800u, 0x1000u);
+    TargetRefuses(vertexRead, "sample-preserving guest publication");
+    Require(fixture.Resident(), "a refused read over pages a GPU write may only have partly reached retired the owner");
+    AgcDriver::GuestMemory::MarkPossiblyWritten(read, 0x2000u);
+    vertexRead();
+    Require(fixture.Resident(), "a read over pages a GPU write may have reached retired the depth plane too");
+    std::printf("Native depth samples=%u: pages a GPU write may have reached count as overwritten once they cover the read\n", fragments);
+}
+
+void CheckStraddlingOverwrittenRead(Context context, std::uint32_t fragments) {
+    OverwriteFixture fixture(context, fragments, 0x10000u);
+    const auto& target = fixture.target;
+    const auto read = target.htileAddress - 0x800u;
+    const std::size_t readBytes = 0x2800u;
+    const auto textureRead = [&] { RequireNoMultisampleTarget(read, readBytes, "a texture read"); };
+    const std::vector<std::byte> below(fixture.metadata.Data() + 0x10000u - 0x800u, fixture.metadata.Data() + 0x10000u);
+    TargetRefuses(textureRead, "sample-preserving guest publication");
+    Require(fixture.Resident(), "a refused read that starts below a never overwritten HTILE range retired the owner");
+    std::memset(fixture.metadata.Data() + 0x10000u, 0x55, 0x1000u);
+    TargetRefuses(textureRead, "sample-preserving guest publication");
+    Require(fixture.Resident(), "a read whose bytes inside the HTILE range were only partly overwritten retired the owner");
+    fixture.metadata.Data()[0x11000u] = std::byte{0x55};
+    textureRead();
+    Require(fixture.Resident(), "a read that starts below the HTILE range and ends inside its overwritten bytes retired the depth plane too");
+    std::vector<std::byte> guest(readBytes);
+    AgcDriver::GuestMemory::Read(read, std::span(guest));
+    for (std::size_t offset = 0u; offset < readBytes; ++offset) Require(guest[offset] == (offset < 0x800u ? below[offset] : offset < 0x1800u ? std::byte{0x55} : offset == 0x1800u ? std::byte{0x55} : std::byte{0}), "a read of the overwritten bytes did not return the guest bytes");
+    std::printf("Native depth samples=%u: a read that starts below the HTILE range refused while its bytes inside were not all overwritten and passed once they were\n", fragments);
+}
+
 void CheckHtileRouting(Context context, VkFormat format, std::uint32_t fragments) {
     const VkExtent2D extent{5u, 3u};
     const auto bytes = static_cast<std::size_t>(MultisampledDepthBytes_nid_no_patch(extent, format == VK_FORMAT_D16_UNORM ? 2u : 4u, fragments));
@@ -1395,6 +1524,12 @@ int main(int argc, char** argv) {
                 }
                 CheckHtileRouting(context, format, samples);
                 CheckUnwrittenGuestAccess(context, format, samples);
+                if (format == VK_FORMAT_D32_SFLOAT) {
+                    CheckOverwrittenRangeRead(context, samples);
+                    CheckStraddlingOverwrittenRead(context, samples);
+                    CheckDriverStoredRangeRead(context, samples);
+                    CheckPossiblyWrittenRangeRead(context, samples);
+                }
             }
         }
         CheckEligibility(context);

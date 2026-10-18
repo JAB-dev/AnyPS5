@@ -60,6 +60,7 @@ struct DepthGuard {
     std::shared_ptr<std::atomic<bool>> active;
     std::vector<GuestMemory::UnchangedQuery> live;
     std::shared_ptr<std::atomic<bool>> hostWritten;
+    std::shared_ptr<std::atomic<std::uint64_t>> hostWriteGeneration;
 };
 
 std::shared_mutex& depthGuardMutex() {
@@ -363,6 +364,7 @@ public:
             Require(GuestMemory::UnchangedSinceCollected(metadata.address, metadata.bytes, clearGeneration), "CPU writes raced native multisample depth clear");
             RecordClear(VK_IMAGE_ASPECT_DEPTH_BIT);
             sampling.initial = current;
+            hostWriteGeneration->store(GuestMemory::TrackerGeneration(), std::memory_order_release);
             clearGeneration = 0u;
             pendingClear = 0u;
         }
@@ -521,11 +523,16 @@ public:
     }
 
     void NoteHostWrite() {
+        if (samplingActive) {
+            for (const auto& range : sampling.initial) GuestMemory::CollectWrites(range.address, range.bytes);
+            hostWriteGeneration->store(GuestMemory::TrackerGeneration(), std::memory_order_release);
+        }
         hostWritten->store(true, std::memory_order_release);
     }
 
     std::uint64_t written = ++depthWrites;
     std::shared_ptr<std::atomic<bool>> hostWritten = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<std::uint64_t>> hostWriteGeneration = std::make_shared<std::atomic<std::uint64_t>>(0u);
     bool retired = false;
 
     bool Overlaps(std::uint64_t address, std::uint64_t bytes) const {
@@ -1867,16 +1874,60 @@ void RequireNoResidentDepthRead_nid_no_patch(std::uint64_t address, std::size_t 
     if (bytes == 0u || !anyDepthGuard().load(std::memory_order_acquire)) return;
     Require(address <= std::numeric_limits<std::uint64_t>::max() - bytes, "native depth read range overflows");
     const auto overlaps = [&](const DepthGuard& range) { return address < range.address + range.bytes && range.address < address + bytes; };
+    struct Judged {
+        const std::atomic<bool>* active;
+        std::uint64_t begin;
+        std::uint64_t end;
+        std::uint64_t generation;
+        bool written;
+    };
+    std::vector<Judged> judged;
     {
         std::shared_lock lock(depthGuardMutex());
-        if (std::ranges::none_of(depthGuards(), overlaps)) return;
+        for (const auto& range : depthGuards()) {
+            if (!overlaps(range)) continue;
+            const bool written = range.hostWritten->load(std::memory_order_acquire);
+            judged.push_back({range.active.get(), range.address, range.address + range.bytes, written ? range.hostWriteGeneration->load(std::memory_order_acquire) : 0u, written});
+        }
+    }
+    if (judged.empty()) return;
+    for (const auto& guard : judged) {
+        if (!guard.written) continue;
+        const auto first = std::max(address, guard.begin);
+        const auto last = std::min(address + bytes, guard.end);
+        Require(first < last && GuestMemory::OverwrittenSince(first, static_cast<std::size_t>(last - first), guard.generation), "sample-preserving guest publication of native multisample depth is not implemented");
     }
     std::unique_lock lock(depthGuardMutex());
     for (const auto& range : depthGuards()) {
-        if (overlaps(range)) Require(!range.hostWritten->load(std::memory_order_acquire), "sample-preserving guest publication of native multisample depth is not implemented");
+        if (!overlaps(range)) continue;
+        const auto known = std::ranges::find_if(judged, [&](const Judged& guard) { return guard.active == range.active.get() && guard.begin == range.address && guard.end == range.address + range.bytes; });
+        const bool written = range.hostWritten->load(std::memory_order_acquire);
+        Require(known != judged.end() && known->written == written && (!written || known->generation == range.hostWriteGeneration->load(std::memory_order_acquire)), "native multisample depth changed while a guest read was judged");
+    }
+    for (auto& range : depthGuards()) {
+        if (!overlaps(range)) continue;
+        if (!range.hostWritten->load(std::memory_order_acquire)) {
+            range.active->store(false, std::memory_order_release);
+            continue;
+        }
+        const auto first = std::max<std::uint64_t>(address, range.address);
+        const auto last = std::min<std::uint64_t>(address + bytes, range.address + range.bytes);
+        std::vector<GuestMemory::UnchangedQuery> remaining;
+        remaining.reserve(range.live.size() + 1u);
+        for (const auto& part : range.live) {
+            const auto finish = part.address + part.bytes;
+            const auto from = std::max<std::uint64_t>(first, part.address);
+            const auto to = std::min<std::uint64_t>(last, finish);
+            if (from >= to) remaining.push_back(part);
+            else {
+                if (part.address < from) remaining.push_back({part.address, static_cast<std::size_t>(from - part.address), 0u});
+                if (to < finish) remaining.push_back({to, static_cast<std::size_t>(finish - to), 0u});
+            }
+        }
+        range.live = std::move(remaining);
     }
     for (const auto& range : depthGuards()) {
-        if (overlaps(range)) range.active->store(false, std::memory_order_release);
+        if (std::ranges::all_of(depthGuards(), [&](const auto& part) { return part.active != range.active || part.live.empty(); })) range.active->store(false, std::memory_order_release);
     }
     std::erase_if(depthGuards(), [](const auto& range) { return !range.active->load(std::memory_order_acquire); });
     anyDepthGuard().store(!depthGuards().empty(), std::memory_order_release);
@@ -1992,7 +2043,7 @@ VkImageView DepthSurfaceView(const Context& context, const DepthTarget& target, 
         auto& fresh = *surfaces().back();
         if (target.samples != 1u && fresh.sampleable && fresh.sampling.refusal.empty()) {
             std::unique_lock guardLock(depthGuardMutex());
-            for (const auto& range : fresh.sampling.initial) depthGuards().push_back({context.device, range.address, range.bytes, fresh.active, {{range.address, range.bytes, 0u}}, fresh.hostWritten});
+            for (const auto& range : fresh.sampling.initial) depthGuards().push_back({context.device, range.address, range.bytes, fresh.active, {{range.address, range.bytes, 0u}}, fresh.hostWritten, fresh.hostWriteGeneration});
             anyDepthGuard().store(true, std::memory_order_release);
             InstallResidentImageReadGuard_nid_no_patch();
             fresh.samplingActive = true;
