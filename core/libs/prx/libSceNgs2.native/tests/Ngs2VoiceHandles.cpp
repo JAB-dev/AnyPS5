@@ -100,9 +100,10 @@ static void MatrixInfo() {
     Control(voice, SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS, Ngs2VoiceMatrixLevelsParam{{}, 0, 64, full.data()});
     Status(sceNgs2VoiceGetMatrixInfo(voice, 0, &info, sizeof(info)), SCE_NGS2_OK, "GetMatrixInfo failed for 64 levels");
     Require(info.num_levels == 64 && std::equal(full.begin(), full.end(), info.levels));
-    std::array<unsigned char, sizeof(info) + 1> larger{};
+    alignas(Ngs2VoiceMatrixInfo) std::array<unsigned char, sizeof(info) + 1> larger;
+    larger.fill(0xa5);
     Status(sceNgs2VoiceGetMatrixInfo(voice, 0, reinterpret_cast<Ngs2VoiceMatrixInfo*>(larger.data()), larger.size()), SCE_NGS2_OK, "GetMatrixInfo rejected a larger output");
-    Require(larger.back() == 0 && std::equal(bytes, bytes + sizeof(info), larger.begin()));
+    Require(larger.back() == 0xa5 && std::equal(bytes, bytes + sizeof(info), larger.begin()));
     MatrixIndexFirst(voice, 1);
     const auto master = Voice(CreateRack(system, SCE_NGS2_RACK_ID_MASTERING));
     MatrixIndexFirst(master, 0);
