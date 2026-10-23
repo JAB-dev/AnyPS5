@@ -14,6 +14,8 @@ static constexpr std::uint32_t COMMAND_EVENT = 2;
 static constexpr std::uint32_t COMMAND_MATRIX_LEVELS = 5;
 static constexpr std::uint32_t COMMAND_PORT_VOLUME = 6;
 static constexpr std::uint32_t COMMAND_PORT_MATRIX = 7;
+static constexpr float MAX_PORT_VOLUME = 32.0f;
+static constexpr std::size_t DEFAULT_MAX_PORTS = 8;
 static constexpr std::uint8_t COMMAND_TYPE_FLOAT = 1;
 static constexpr std::uint8_t COMMAND_TYPE_INT = 3;
 static constexpr std::uint8_t COMMAND_TYPE_UINT = 4;
@@ -143,7 +145,7 @@ static void ApplyCommonParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param
         }
         case SCE_NGS2_VOICE_PARAM_PORT_VOLUME: {
             const auto& volume = ParamAs<Ngs2VoicePortVolumeParam>(param);
-            PortAt(voice, volume.port).volume = volume.level;
+            PortAt(voice, volume.port).volume = std::clamp(volume.level, 0.0f, MAX_PORT_VOLUME);
             break;
         }
         case SCE_NGS2_VOICE_PARAM_PORT_MATRIX: {
@@ -413,6 +415,11 @@ int APS5_VABI sceNgs2VoiceRunCommands(uintptr_t voice_handle, const Ngs2VoiceCom
     if (found == nullptr) return SCE_NGS2_ERROR_INVALID_VOICE_HANDLE;
     auto& voice = *found;
     if (commands == nullptr && num_commands != 0) APS5_INVALID_ARG_EX;
+    const auto isVolume = [](const Ngs2VoiceCommand& command) { return (command.id & 0xffffff) == COMMAND_PORT_VOLUME; };
+    const auto badPort = [&](const Ngs2VoiceCommand& command) { return isVolume(command) && (command.id >> 24) >= voice.ports.size(); };
+    if (voice.ports.size() == DEFAULT_MAX_PORTS && std::any_of(commands, commands + num_commands, badPort) && std::all_of(commands, commands + num_commands, isVolume)) {
+        return SCE_NGS2_ERROR_INVALID_VOICE_OUTPUT_INDEX;
+    }
     for (std::size_t i = 0; i < num_commands; i++) {
         const auto& command = commands[i];
         const std::uint32_t index = command.id >> 24;
@@ -422,10 +429,10 @@ int APS5_VABI sceNgs2VoiceRunCommands(uintptr_t voice_handle, const Ngs2VoiceCom
                                         : id == COMMAND_PORT_VOLUME ? COMMAND_TYPE_FLOAT
                                         : id == COMMAND_PORT_MATRIX ? COMMAND_TYPE_INT : 0;
         if (expectedType == 0) throw std::runtime_error("NGS2: voice command " + Ngs2Hex(command.id) + " is not implemented");
-        if (command.type != expectedType) throw std::invalid_argument("NGS2: voice command " + Ngs2Hex(command.id) + " has value type " + Ngs2Hex(command.type));
+        if (id != COMMAND_PORT_VOLUME && command.type != expectedType) throw std::invalid_argument("NGS2: voice command " + Ngs2Hex(command.id) + " has value type " + Ngs2Hex(command.type));
         if (id == COMMAND_EVENT) voice.SetEvent(command.value.u);
         else if (id == COMMAND_MATRIX_LEVELS) SetMatrixLevels(voice, index, command.value.levels, command.count);
-        else if (id == COMMAND_PORT_VOLUME) PortAt(voice, index).volume = command.value.f;
+        else if (id == COMMAND_PORT_VOLUME) PortAt(voice, index).volume = std::clamp(command.value.f, 0.0f, MAX_PORT_VOLUME);
         else SetPortMatrix(voice, index, command.value.i);
     }
     return SCE_NGS2_OK;
