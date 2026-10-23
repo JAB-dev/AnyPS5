@@ -26,7 +26,8 @@ static constexpr int SCE_NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT = static_cast<int>(0
 static constexpr int SCE_NGS2_ERROR_INVALID_PAN_UNIT_ANGLE = static_cast<int>(0x804A8450);
 static constexpr int SCE_NGS2_ERROR_INVALID_PAN_SPEAKER = static_cast<int>(0x804A8451);
 static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_HANDLE = static_cast<int>(0x804A8203);
-static constexpr int SCE_NGS2_ERROR_NULL_PARAM_LIST = static_cast<int>(0x804A8360);
+static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_PARAM_ID = static_cast<int>(0x804A835A);
+static constexpr int SCE_NGS2_ERROR_NULL_PARAM_LIST =static_cast<int>(0x804A8360);
 static constexpr int SCE_NGS2_ERROR_INVALID_GEOM_LISTENER_ADDRESS = static_cast<int>(0x804A8461);
 static constexpr int SCE_NGS2_ERROR_INVALID_GEOM_FLAG = static_cast<int>(0x804A8463);
 static constexpr int SCE_NGS2_ERROR_INVALID_OPTION_SIZE = static_cast<int>(0x804A8013);
@@ -494,14 +495,21 @@ struct Ngs2SamplerVoiceFilterParam {
     Ngs2VoiceParamHeader header;
     std::uint32_t index;
     std::uint32_t location;
-    std::uint32_t type;
     std::uint64_t channel_mask;
+    std::uint32_t type;
     float frequency;
     float q;
     float level;
     std::uint32_t reserved[3];
 };
 static_assert(sizeof(Ngs2SamplerVoiceFilterParam) == 56);
+static_assert(offsetof(Ngs2SamplerVoiceFilterParam, index) == 0x8);
+static_assert(offsetof(Ngs2SamplerVoiceFilterParam, location) == 0xC);
+static_assert(offsetof(Ngs2SamplerVoiceFilterParam, channel_mask) == 0x10);
+static_assert(offsetof(Ngs2SamplerVoiceFilterParam, type) == 0x18);
+static_assert(offsetof(Ngs2SamplerVoiceFilterParam, frequency) == 0x1C);
+static_assert(offsetof(Ngs2SamplerVoiceFilterParam, q) == 0x20);
+static_assert(offsetof(Ngs2SamplerVoiceFilterParam, level) == 0x24);
 
 struct Ngs2SubmixerVoiceSetupParam {
     Ngs2VoiceParamHeader header;

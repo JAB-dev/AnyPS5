@@ -127,24 +127,17 @@ static bool Bypasses(const Ngs2Filter& filter, std::uint32_t channel) {
     return channel < 64 && (filter.bypassMask & (std::uint64_t{1} << channel)) != 0;
 }
 
-static bool HasHistory(const Ngs2Filter& filter) {
-    if (!filter.enabled) return false;
-    for (std::uint32_t channel = 0; channel < filter.history.size(); channel++) {
-        const auto& h = filter.history[channel];
-        if (!Bypasses(filter, channel) && (h.x1 != 0.0 || h.x2 != 0.0 || h.y1 != 0.0 || h.y2 != 0.0)) return true;
-    }
-    return false;
-}
-
 static void ApplyFilter(Ngs2Voice& voice, Ngs2Filter& filter, std::uint32_t grain) {
+    for (std::size_t port = 1; filter.location == 2 && port < voice.ports.size(); port++) {
+        if (voice.ports[port].dest != nullptr) throw std::runtime_error("NGS2: a PRE_SEND sampler filter on a voice with a patched port other than port 0 is not implemented");
+    }
     for (std::uint32_t channel = 0; channel < voice.channels; channel++) {
         if (Bypasses(filter, channel)) continue;
         auto& h = filter.history[channel];
         for (std::uint32_t i = 0; i < grain; i++) {
             auto& sample = voice.samples[channel * grain + i];
             const double x = sample;
-            double y = filter.b0 * x + filter.b1 * h.x1 + filter.b2 * h.x2 - filter.a1 * h.y1 - filter.a2 * h.y2;
-            if (std::abs(y) < 1e-20) y = 0.0;
+            const double y = filter.b0 * x + filter.b1 * h.x1 + filter.b2 * h.x2 - filter.a1 * h.y1 - filter.a2 * h.y2;
             h = {x, h.x1, y, h.y1};
             sample = static_cast<float>(y);
         }
@@ -161,12 +154,12 @@ static void RenderSampler(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t s
         return;
     }
     for (auto& filter : voice.filters) {
-        if (!filter.enabled || (!voice.hasSamples && !HasHistory(filter))) continue;
+        if (!filter.enabled) continue;
         ApplyFilter(voice, filter, grain);
         voice.hasSamples = true;
     }
     const bool buffered = voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 && voice.atrac9.windowCursor * voice.channels < voice.atrac9.window.size();
-    if (voice.state == Ngs2PlayState::Playing && voice.blocks.empty() && !buffered && !voice.acceptsBlocks && std::none_of(voice.filters.begin(), voice.filters.end(), HasHistory)) {
+    if (voice.state == Ngs2PlayState::Playing && voice.blocks.empty() && !buffered && !voice.acceptsBlocks) {
         voice.state = Ngs2PlayState::Empty;
     }
 }

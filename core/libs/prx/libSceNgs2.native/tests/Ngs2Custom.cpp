@@ -351,6 +351,8 @@ static void TestCustomFilter() {
     Control(voice, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER, Ngs2CustomVoiceFilterParam{});
     Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS,
             Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 1, &block});
+    Require(Flags(voice) == 0);
+    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
     Require(sceNgs2SystemRender(system, &renderInfo, 1) == SCE_NGS2_OK);
     Require(out[0] > 0.4f);
     Require(sceNgs2RackDestroy(rack, nullptr) == SCE_NGS2_OK);

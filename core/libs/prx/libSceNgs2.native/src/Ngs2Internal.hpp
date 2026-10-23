@@ -80,12 +80,13 @@ struct Ngs2FilterHistory {
 
 struct Ngs2Filter {
     bool enabled = false;
+    std::uint32_t location = 0;
     std::uint64_t bypassMask = 0;
-    double b0 = 1.0;
-    double b1 = 0.0;
-    double b2 = 0.0;
-    double a1 = 0.0;
-    double a2 = 0.0;
+    float b0 = 1.0f;
+    float b1 = 0.0f;
+    float b2 = 0.0f;
+    float a1 = 0.0f;
+    float a2 = 0.0f;
     std::vector<Ngs2FilterHistory> history;
 };
 

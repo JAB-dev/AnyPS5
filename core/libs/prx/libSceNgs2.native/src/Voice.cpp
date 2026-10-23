@@ -20,6 +20,10 @@ static constexpr std::uint8_t COMMAND_TYPE_UINT = 4;
 static constexpr std::uint8_t COMMAND_TYPE_FLOAT_ARRAY = 0x11;
 static constexpr float MAX_MATRIX_LEVEL = 4.0f;
 
+struct Ngs2ReturnCode {
+    int code;
+};
+
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
@@ -260,37 +264,36 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
 }
 
 void Ngs2SetFilter(Ngs2Voice& voice, const Ngs2SamplerVoiceFilterParam& param) {
-    if (param.index >= voice.rack->maxFilters) APS5_INVALID_ARG_EX;
+    if (param.index >= voice.rack->maxFilters) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_PARAM_ID};
     if (voice.filters.size() <= param.index) voice.filters.resize(param.index + 1);
     auto& filter = voice.filters[param.index];
     if (param.type == 0) {
         filter = {};
         return;
     }
-    if (param.location != 1 || param.type != 1) {
+    if (param.location > 2 || param.type != 1) {
         throw std::runtime_error("NGS2: sampler filter location " + std::to_string(param.location) + " type " + std::to_string(param.type) + " is not implemented");
     }
-    if (!std::isfinite(param.frequency) || param.frequency < 0.0f || !std::isfinite(param.q) || param.q <= 0.0f || !std::isfinite(param.level) || param.level < 0.0f) {
-        APS5_INVALID_ARG_EX;
+    const auto systemRate = voice.rack->system->option.sample_rate;
+    if (voice.sampleRate != 0 && voice.sampleRate != systemRate) {
+        throw std::runtime_error("NGS2: a sampler filter on a voice whose sample rate differs from the system rate is not implemented");
     }
-    const double rate = voice.rack->system->option.sample_rate;
+    const auto rate = static_cast<float>(systemRate);
+    const float frequency = std::clamp(param.frequency, rate * 0.0001f, rate * 0.499f);
+    const float q = std::clamp(param.q, 0.0001f, 32.0f);
     filter.enabled = true;
+    filter.location = param.location;
     filter.bypassMask = param.channel_mask;
     filter.history.resize(voice.channels);
-    if (param.frequency == 0.0f || param.frequency >= rate * 0.5) {
-        filter.b0 = param.frequency == 0.0f ? 0.0 : param.level;
-        filter.b1 = filter.b2 = filter.a1 = filter.a2 = 0.0;
-        return;
-    }
-    const double omega = 2.0 * std::numbers::pi * param.frequency / rate;
-    const double cosine = std::cos(omega);
-    const double alpha = std::sin(omega) / (2.0 * param.q);
-    const double inverseA0 = 1.0 / (1.0 + alpha);
-    filter.b0 = (1.0 - cosine) * 0.5 * inverseA0 * param.level;
-    filter.b1 = 2.0 * filter.b0;
+    const float omega = 2.0f * std::numbers::pi_v<float> * frequency / rate;
+    const float cosine = std::cos(omega);
+    const float alpha = std::sin(omega) / (2.0f * q);
+    const float a0 = 1.0f + alpha;
+    filter.b0 = (1.0f - cosine) * 0.5f / a0;
+    filter.b1 = 2.0f * filter.b0;
     filter.b2 = filter.b0;
-    filter.a1 = -2.0 * cosine * inverseA0;
-    filter.a2 = (1.0 - alpha) * inverseA0;
+    filter.a1 = -2.0f * cosine / a0;
+    filter.a2 = (1.0f - alpha) / a0;
 }
 
 static void ApplySamplerParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
@@ -400,9 +403,13 @@ int APS5_VABI sceNgs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamHe
     auto* found = Ngs2FindVoice(voice_handle);
     if (found == nullptr) return SCE_NGS2_ERROR_INVALID_VOICE_HANDLE;
     auto& voice = *found;
-    for (const auto* param = param_list;; param = reinterpret_cast<const Ngs2VoiceParamHeader*>(reinterpret_cast<const std::uint8_t*>(param) + param->next)) {
-        ApplyParam(voice, *param);
-        if (param->next == 0) break;
+    try {
+        for (const auto* param = param_list;; param = reinterpret_cast<const Ngs2VoiceParamHeader*>(reinterpret_cast<const std::uint8_t*>(param) + param->next)) {
+            ApplyParam(voice, *param);
+            if (param->next == 0) break;
+        }
+    } catch (const Ngs2ReturnCode& result) {
+        return result.code;
     }
     return SCE_NGS2_OK;
 }
