@@ -1565,6 +1565,12 @@ static void TestMatrixLevelLimitsAndPortMatrices() {
     Control(submixer, SCE_NGS2_SUBMIXER_VOICE_PARAM_SETUP, Ngs2SubmixerVoiceSetupParam{{}, 2, 0});
     Require(SetLevels(submixer, 0, many.data(), 64, false) == SCE_NGS2_OK);
     Require(ThrowsRuntime([&] { SetLevels(submixer, 0, many.data(), 65, false); }));
+    for (bool command : {false, true}) {
+        Require(ThrowsRuntime([&] { SetLevels(submixer, 0, many.data(), 0, command); }));
+        Require(ThrowsRuntime([&] { SetLevels(submixer, 0, nullptr, 2, command); }));
+        Require(ThrowsRuntime([&] { SetLevels(submixer, 200, many.data(), 2, command); }));
+    }
+    Require(StoredLevels(submixer, 0) == std::vector<float>(64, 2.0f));
     Require(sceNgs2SystemDestroy(chain.system, nullptr) == SCE_NGS2_OK);
 
     chain = MatrixSampler(1, 0, 0);
