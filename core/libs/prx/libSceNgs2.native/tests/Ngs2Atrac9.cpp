@@ -632,6 +632,13 @@ static void TestAppendWithoutWaveform() {
         rejected = true;
     }
     Require(rejected);
+    rejected = false;
+    try {
+        Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, Superframe, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND, 0, nullptr});
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    Require(rejected);
     Queue(voice, Superframe, SuperframeBytes, 0, 500);
     Render(system, 512);
     Require(Flags(voice) == 0);
