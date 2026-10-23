@@ -1767,7 +1767,9 @@ static void TestPortMatrixIdRanges() {
     for (std::uint32_t maxMatrices : {17u, 32u}) {
         chain = MatrixSampler(maxMatrices, 0, 0);
         Require(SetLevels(chain.sampler, 15, preset.data(), 2, false) == SCE_NGS2_OK);
-        for (std::uint32_t id = 16; id < std::min(maxMatrices, 20u); id++) Require(SetLevels(chain.sampler, id, other.data(), 2, true) == SCE_NGS2_OK);
+        for (std::uint32_t id : {16u, 17u, 19u}) {
+            if (id < maxMatrices) Require(SetLevels(chain.sampler, id, other.data(), 2, true) == SCE_NGS2_OK);
+        }
         Require(SetPortMatrix(chain.sampler, 15) == SCE_NGS2_OK && StereoFrame(chain.system) == (std::vector<float>{0.25f, 0.125f}));
         Require(SetPortMatrix(chain.sampler, 16) == SCE_NGS2_OK && PortMatrixId(chain.sampler) == 16);
         Require(StereoFrame(chain.system) == (std::vector<float>{spread, spread}));
@@ -1775,7 +1777,12 @@ static void TestPortMatrixIdRanges() {
         Require(SetPortMatrix(chain.sampler, 17) == SCE_NGS2_OK);
         std::vector<float> out(Grain * 2);
         const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 2};
-        Require(ThrowsRuntime([&] { sceNgs2SystemRender(chain.system, &info, 1); }));
+        if (maxMatrices > 18) {
+            Require(StereoFrame(chain.system) == (std::vector<float>{0.75f, -0.5f}));
+            Require(SetPortMatrix(chain.sampler, 18) == SCE_NGS2_OK && StereoFrame(chain.system) == (std::vector<float>{spread, spread}));
+        } else {
+            Require(ThrowsRuntime([&] { sceNgs2SystemRender(chain.system, &info, 1); }));
+        }
         Require(sceNgs2SystemDestroy(chain.system, nullptr) == SCE_NGS2_OK);
     }
 
