@@ -28,14 +28,17 @@ static constexpr int SCE_NGS2_ERROR_INVALID_PAN_SPEAKER = static_cast<int>(0x804
 static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_HANDLE = static_cast<int>(0x804A8203);
 static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_PARAM_ID = static_cast<int>(0x804A835A);
 static constexpr int SCE_NGS2_ERROR_NULL_PARAM_LIST =static_cast<int>(0x804A8360);
+static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE = static_cast<int>(0x804A8361);
 static constexpr int SCE_NGS2_ERROR_INVALID_GEOM_LISTENER_ADDRESS = static_cast<int>(0x804A8461);
 static constexpr int SCE_NGS2_ERROR_INVALID_GEOM_FLAG = static_cast<int>(0x804A8463);
 static constexpr int SCE_NGS2_ERROR_INVALID_OPTION_SIZE = static_cast<int>(0x804A8013);
 static constexpr int SCE_NGS2_ERROR_INVALID_NUM_CHANNELS = static_cast<int>(0x804A8052);
+static constexpr int SCE_NGS2_ERROR_INVALID_FILTER_TYPE = static_cast<int>(0x804A8060);
 static constexpr int SCE_NGS2_ERROR_INVALID_PITCH_SHIFT_OPTION = static_cast<int>(0x804A8098);
 static constexpr int SCE_NGS2_ERROR_INVALID_REVERB_OPTION = static_cast<int>(0x804A8099);
 static constexpr int SCE_NGS2_ERROR_INVALID_STATE_SIZE = static_cast<int>(0x804A8302);
 static constexpr int SCE_NGS2_ERROR_INVALID_BUFFER_INDEX = static_cast<int>(0x804A8306);
+static constexpr int SCE_NGS2_ERROR_INVALID_MODULE_LOCATION = static_cast<int>(0x804A8308);
 static constexpr int SCE_NGS2_ERROR_INVALID_NUM_BUFFERS = static_cast<int>(0x804A830B);
 
 static constexpr std::uint32_t SCE_NGS2_RACK_ID_SAMPLER = 0x1000;
@@ -594,8 +597,8 @@ static_assert(sizeof(Ngs2CustomVoiceGainParam) == 156);
 
 struct Ngs2CustomVoiceFilterParam {
     Ngs2VoiceParamHeader header;
+    std::uint64_t channel_mask;
     std::uint32_t type;
-    std::uint32_t channel_mask;
     union {
         struct {
             float i0;
@@ -614,10 +617,11 @@ struct Ngs2CustomVoiceFilterParam {
     } param;
     std::uint32_t reserved3;
 };
-static_assert(sizeof(Ngs2CustomVoiceFilterParam) == 40);
-static_assert(offsetof(Ngs2CustomVoiceFilterParam, type) == 8);
-static_assert(offsetof(Ngs2CustomVoiceFilterParam, channel_mask) == 12);
-static_assert(offsetof(Ngs2CustomVoiceFilterParam, param) == 16);
+static_assert(sizeof(Ngs2CustomVoiceFilterParam) == 0x30);
+static_assert(offsetof(Ngs2CustomVoiceFilterParam, channel_mask) == 0x8);
+static_assert(offsetof(Ngs2CustomVoiceFilterParam, type) == 0x10);
+static_assert(offsetof(Ngs2CustomVoiceFilterParam, param) == 0x14);
+static_assert(offsetof(Ngs2CustomVoiceFilterParam, reserved3) == 0x28);
 
 struct Ngs2MasteringVoiceSetupParam {
     Ngs2VoiceParamHeader header;
