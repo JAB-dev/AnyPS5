@@ -220,9 +220,10 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
     constexpr std::uint32_t knownFlags = SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_SILENCE;
     const bool measuredWithoutBlocks = param.num_blocks == 0 && (param.flags == 0x8 || param.flags == 0xA || param.flags == 0xC || param.flags == 0x20);
     if ((param.flags & ~knownFlags) != 0 && !measuredWithoutBlocks) throw std::runtime_error("NGS2: waveform block flags " + Ngs2Hex(param.flags) + " are not implemented");
-    if (param.num_blocks != 0 && (voice.channels == 0 || param.blocks == nullptr || param.data == nullptr)) APS5_INVALID_ARG_EX;
+    if (param.num_blocks != 0 && (param.blocks == nullptr || param.data == nullptr)) APS5_INVALID_ARG_EX;
     const bool reset = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET) != 0;
     if (!voice.acceptsBlocks && !reset) throw Ngs2ReturnCode{SCE_NGS2_ERROR_FULL_WAVEFORM_BLOCKS};
+    if (param.num_blocks != 0 && voice.channels == 0) APS5_INVALID_ARG_EX;
     if (reset) {
         ++voice.waveformRevision;
         voice.blocks.clear();
