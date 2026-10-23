@@ -107,6 +107,14 @@ static void TestLowPassAndTail() {
 
     for (float sample : RenderGrain(system, 1)) Require(sample == 0.0f);
     Require(Flags(sampler) == 0);
+
+    const Ngs2WaveformBlock block{0, pcm.size() * sizeof(std::int16_t), 0, 0, static_cast<std::uint32_t>(pcm.size()), 0, 0};
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 1, &block});
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    out = RenderGrain(system, 1);
+    const auto replay = RenderGrain(system, 1);
+    out.insert(out.end(), replay.begin(), replay.end());
+    RequireResponse(out, FC_1000, 1e-5f);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
@@ -244,6 +252,23 @@ static void TestUnmeasuredFilterCasesThrow() {
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
+static void TestFrontFilterWithPitchThrows() {
+    for (std::uint32_t location : {0u, 1u, 2u}) {
+        const auto system = CreateSystem();
+        const auto master = Mastering(system, 1);
+        const auto pcm = Impulse(4 * Grain);
+        const auto sampler = Sampler(system, pcm, 1, 48000);
+        Patch(sampler, master);
+        SetFilter(sampler, Filter(0, location, 1, 0, 1000.0f, Q, 1.0f));
+        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, 2.0f});
+        Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+        std::vector<float> out(Grain);
+        const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 1};
+        Require(ThrowsRuntimeError([&] { sceNgs2SystemRender(system, &info, 1); }) == (location != 1));
+        Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    }
+}
+
 static void TestTailIsNotFlushed() {
     const auto out = ImpulseResponse(Filter(0, 1, 1, 0, 8000.0f, Q, 1.0f), 48000, 16 * Grain);
     Require(out[100] != 0.0f && std::isfinite(out[100]));
@@ -259,5 +284,6 @@ int main() {
     TestFilterBeforeSetupIsCleared();
     TestUnmeasuredFilterCasesThrow();
     TestTailIsNotFlushed();
+    TestFrontFilterWithPitchThrows();
     return 0;
 }

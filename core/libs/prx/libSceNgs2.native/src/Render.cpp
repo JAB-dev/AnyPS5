@@ -128,6 +128,7 @@ static bool Bypasses(const Ngs2Filter& filter, std::uint32_t channel) {
 }
 
 static void ApplyFilter(Ngs2Voice& voice, Ngs2Filter& filter, std::uint32_t grain) {
+    if (filter.location != 1 && voice.pitch != 1.0f) throw std::runtime_error("NGS2: a FRONT or PRE_SEND sampler filter on a voice with a pitch other than 1 is not implemented");
     for (std::size_t port = 1; filter.location == 2 && port < voice.ports.size(); port++) {
         if (voice.ports[port].dest != nullptr) throw std::runtime_error("NGS2: a PRE_SEND sampler filter on a voice with a patched port other than port 0 is not implemented");
     }
@@ -161,6 +162,7 @@ static void RenderSampler(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t s
     const bool buffered = voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 && voice.atrac9.windowCursor * voice.channels < voice.atrac9.window.size();
     if (voice.state == Ngs2PlayState::Playing && voice.blocks.empty() && !buffered && !voice.acceptsBlocks) {
         voice.state = Ngs2PlayState::Empty;
+        for (auto& filter : voice.filters) std::fill(filter.history.begin(), filter.history.end(), Ngs2FilterHistory{});
     }
 }
 
