@@ -254,10 +254,12 @@ static void TestClosedWaveformReturnsFull() {
     Require(Add(fresh, pcm, 0, 1) == full);
     for (std::uint32_t flags : {0x9u, 0x21u, 0x28u, 0x40u}) Require(Throws([&] { Add(fresh, pcm, 0, flags | 4); }));
 
+    std::vector<std::int16_t> ramp(Grain * 2);
+    for (std::size_t i = 0; i < ramp.size(); i++) ramp[i] = static_cast<std::int16_t>(8 * (i + 1));
     const auto closed = StreamVoice(rack, 1, master);
-    Require(Add(closed, pcm, 1, 0) == SCE_NGS2_OK);
+    Require(Add(closed, ramp, 1, 0) == SCE_NGS2_OK);
     Event(closed, SCE_NGS2_VOICE_EVENT_PLAY);
-    Require(RenderI16(system)[0] == 4096);
+    Require(RenderI16(system) == std::vector<std::int16_t>(ramp.begin(), ramp.begin() + Grain));
     const auto before = SamplerState(closed);
     Require(Add(closed, other, 1, 0) == full && Add(closed, other, 0, 2) == full);
     Require(SameState(before, SamplerState(closed)));
@@ -270,8 +272,7 @@ static void TestClosedWaveformReturnsFull() {
                     {{sizeof(Ngs2VoicePortVolumeParam), 0, SCE_NGS2_VOICE_PARAM_PORT_VOLUME}, 0, 0.0f}};
     Require(sceNgs2VoiceControl(closed, &list.add.header) == full);
     Require(SameState(before, SamplerState(closed)));
-    const auto rest = RenderI16(system);
-    Require(std::all_of(rest.begin(), rest.end(), [](std::int16_t sample) { return sample == 4096; }));
+    Require(RenderI16(system) == std::vector<std::int16_t>(ramp.begin() + Grain, ramp.end()));
     Require(Silent(RenderI16(system)) && Flags(closed) == 0);
     for (std::uint32_t event : {SCE_NGS2_VOICE_EVENT_STOP_IMM, SCE_NGS2_VOICE_EVENT_KILL, SCE_NGS2_VOICE_EVENT_STOP, SCE_NGS2_VOICE_EVENT_PAUSE, SCE_NGS2_VOICE_EVENT_PLAY}) {
         Event(closed, event);
