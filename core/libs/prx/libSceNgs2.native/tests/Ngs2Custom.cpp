@@ -891,16 +891,53 @@ static void TestCustomFilterMatchesSampler() {
     option.custom_rack_option.module[1].module_id = SCE_NGS2_CUSTOM_MODULE_ID_FILTER;
     const auto ordered = CustomSamplerVoice(system, option);
     filter.header.size = sizeof(filter);
-    for (const std::uint32_t index : {0u, 2u}) {
-        filter.header.id = SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER | index;
-        Require(sceNgs2VoiceControl(ordered, &filter.header) == SCE_NGS2_ERROR_INVALID_VOICE_PARAM_ID);
-    }
+    filter.header.id = SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER | 2;
+    Require(sceNgs2VoiceControl(ordered, &filter.header) == SCE_NGS2_ERROR_INVALID_VOICE_PARAM_ID);
     Require(ControlThrows<std::runtime_error>(ordered, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER | 1, filter));
+    Require(ControlThrows<std::runtime_error>(ordered, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER, filter));
 
     auto submixer = RackOption(&userFx, 1);
     submixer.custom_rack_option.module[0] = {};
     submixer.custom_rack_option.module[0].module_id = SCE_NGS2_CUSTOM_MODULE_ID_FILTER;
     Require(ControlThrows<std::runtime_error>(Voice(CustomRack(system, submixer)), SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER, filter));
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    calls = {};
+}
+
+static void TestStarvedFilteredVoiceSkipsUserFx2() {
+    std::vector<std::int16_t> pcm(2 * Grain, 0);
+    pcm[0] = 16384;
+    const auto userFx = Module(Gain);
+    calls = {};
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 2);
+    Ngs2CustomSamplerRackOption option{};
+    option.custom_rack_option.num_modules = 2;
+    option.custom_rack_option.module[0].module_id = SCE_NGS2_CUSTOM_MODULE_ID_FILTER;
+    option.custom_rack_option.module[1].module_id = SCE_NGS2_CUSTOM_MODULE_ID_USER_FX2;
+    option.custom_rack_option.module[1].option = &userFx.custom_module_option;
+    option.custom_rack_option.module[1].state_size = 16;
+    const auto voice = CustomSamplerVoice(system, option);
+    Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 2, 48000, 0, 0, 0}});
+    Patch(voice, master);
+    Ngs2CustomVoiceFilterParam filter{};
+    filter.header = {sizeof(filter), 0, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER};
+    filter.type = 1;
+    filter.param.fcq.frequency = 1000.0f;
+    filter.param.fcq.q = 0.707f;
+    Require(sceNgs2VoiceControl(voice, &filter.header) == SCE_NGS2_OK);
+    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
+    std::vector<float> out(2 * Grain, -1.0f);
+    const Ngs2RenderBufferInfo renderInfo{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 2};
+    for (int i = 0; i < 3; i++) Require(sceNgs2SystemRender(system, &renderInfo, 1) == SCE_NGS2_OK);
+    Require(calls.processFlags.empty());
+    const Ngs2WaveformBlock block{0, pcm.size() * sizeof(std::int16_t), 0, 0, Grain, 0, 0};
+    Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS,
+            Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE, 1, &block});
+    Require(sceNgs2SystemRender(system, &renderInfo, 1) == SCE_NGS2_OK);
+    Require(calls.processFlags.size() == 1);
+    Require(sceNgs2SystemRender(system, &renderInfo, 1) == SCE_NGS2_OK);
+    Require(calls.processFlags.size() == 2 && out[0] != 0.0f);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
     calls = {};
 }
@@ -916,6 +953,7 @@ int main() {
     TestCustomRackChecks();
     TestCustomSampler();
     TestCustomFilter();
+    TestStarvedFilteredVoiceSkipsUserFx2();
     for (const auto moduleIndex : {0u, 1u, 23u}) TestCustomLegacyUserFx(moduleIndex);
     TestCustomGain();
     TestCustomModuleInfo();

@@ -127,6 +127,15 @@ static bool Bypasses(const Ngs2Filter& filter, std::uint32_t channel) {
     return channel < 64 && (filter.bypassMask & (std::uint64_t{1} << channel)) != 0;
 }
 
+static bool HasHistory(const Ngs2Filter& filter) {
+    if (!filter.enabled) return false;
+    for (std::uint32_t channel = 0; channel < filter.history.size(); channel++) {
+        const auto& h = filter.history[channel];
+        if (!Bypasses(filter, channel) && (h.x1 != 0.0 || h.x2 != 0.0 || h.y1 != 0.0 || h.y2 != 0.0)) return true;
+    }
+    return false;
+}
+
 static void ApplyFilter(Ngs2Voice& voice, Ngs2Filter& filter, std::uint32_t grain) {
     if (filter.location >= 2) {
         const std::size_t target = filter.location - 2;
@@ -158,7 +167,7 @@ static void RenderSampler(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t s
         return;
     }
     for (auto& filter : voice.filters) {
-        if (!filter.enabled) continue;
+        if (!filter.enabled || (!voice.hasSamples && !HasHistory(filter))) continue;
         ApplyFilter(voice, filter, grain);
         voice.hasSamples = true;
     }

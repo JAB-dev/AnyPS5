@@ -27,8 +27,8 @@ struct Ngs2ReturnCode {
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
-            for (auto& filter : filters) std::fill(filter.history.begin(), filter.history.end(), Ngs2FilterHistory{});
             if (state == Ngs2PlayState::Empty || state == Ngs2PlayState::Stopped) {
+                for (auto& filter : filters) std::fill(filter.history.begin(), filter.history.end(), Ngs2FilterHistory{});
                 state = Ngs2PlayState::Playing;
                 stateFlags |= SCE_NGS2_VOICE_STATE_FLAG_INUSE;
                 if (userFxHandler) userFxFlags = 1;
@@ -265,13 +265,14 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
 }
 
 void Ngs2SetFilter(Ngs2Voice& voice, const Ngs2SamplerVoiceFilterParam& param) {
-    const bool badSize = param.header.size < sizeof(Ngs2SamplerVoiceFilterParam);
-    const bool badIndex = param.index >= voice.rack->maxFilters ||
-                          (voice.rack->rackId == SCE_NGS2_RACK_ID_CUSTOM_SAMPLER && voice.rack->customModuleIds[param.index] != SCE_NGS2_CUSTOM_MODULE_ID_FILTER);
+    if (param.header.size < sizeof(Ngs2SamplerVoiceFilterParam)) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE};
+    const bool badIndex = param.index >= voice.rack->maxFilters;
+    if (!badIndex && voice.rack->rackId == SCE_NGS2_RACK_ID_CUSTOM_SAMPLER && voice.rack->customModuleIds[param.index] != SCE_NGS2_CUSTOM_MODULE_ID_FILTER) {
+        throw std::runtime_error("NGS2: a custom filter param naming a module other than a filter is not implemented");
+    }
     const bool badLocation = param.location >= std::uint64_t{2} + voice.ports.size();
     const bool badType = param.type >= 12;
-    if (badSize + badIndex + badLocation + badType > 1) throw std::runtime_error("NGS2: a sampler filter param with more than one invalid field is not implemented");
-    if (badSize) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE};
+    if (badIndex + badLocation + badType > 1) throw std::runtime_error("NGS2: a sampler filter param with more than one invalid field is not implemented");
     if (badIndex) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_PARAM_ID};
     if (badLocation) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_MODULE_LOCATION};
     if (badType) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_FILTER_TYPE};

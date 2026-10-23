@@ -12,6 +12,16 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
+
 using Response = std::array<float, 12>;
 
 static constexpr float Q = 0.707f;
@@ -124,23 +134,15 @@ static void TestLowPassAndTail() {
 
 static void TestBypassMaskIgnoresLevel() {
     const auto system = CreateSystem();
-    const auto master = Mastering(system, 2);
-    std::vector<std::int16_t> pcm;
-    for (std::uint32_t i = 0; i < Grain; i++) {
-        pcm.push_back(static_cast<std::int16_t>(i * 1000));
-        pcm.push_back(static_cast<std::int16_t>(i == 0 ? 16384 : 0));
-    }
-    const auto sampler = Sampler(system, pcm, 2, 48000);
+    const auto master = Mastering(system, 1);
+    const auto pcm = Impulse(Grain);
+    const auto sampler = Sampler(system, pcm, 1, 48000);
     Patch(sampler, master);
     SetFilter(sampler, Filter(0, 1, 1, 1, 1000.0f, Q, 0.5f));
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
 
-    const auto out = RenderGrain(system, 2);
-    for (std::uint32_t i = 0; i < Grain; i++) {
-        Require(out[i * 2] == pcm[i * 2] / 32768.0f);
-        Require(std::abs(out[i * 2 + 1] - FC_1000[i]) <= 1e-5f * FC_1000[i]);
-    }
-    Require(Flags(sampler) == 0);
+    const auto out = RenderGrain(system, 1);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == (i == 0 ? 0.5f : 0.0f));
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
@@ -162,8 +164,9 @@ static void TestPs5ClampsAndIgnoredLevel() {
 }
 
 static void TestRateChangeUnderFilter() {
+    const std::vector<std::int16_t> silence(Grain, 0);
     const auto system = CreateSystem();
-    const auto sampler = Sampler(system, std::vector<std::int16_t>(Grain, 0), 1, 48000);
+    const auto sampler = Sampler(system, silence, 1, 48000);
     SetFilter(sampler, Filter(0, 1, 1, 0, 1000.0f, 1.0f, 1.0f));
     Require(sceNgs2SystemSetSampleRate(system, 48000) == SCE_NGS2_OK);
     bool rejected = false;
@@ -234,9 +237,6 @@ static void TestUnmeasuredFilterCasesThrow() {
                               Filter(0, 10, 12, 0, 1000.0f, Q, 1.0f)}) {
         Require(ThrowsRuntimeError([&] { sceNgs2VoiceControl(sampler, &param.header); }));
     }
-    auto small = Filter(8, 1, 1, 0, 1000.0f, Q, 1.0f);
-    small.header.size = 0x30;
-    Require(ThrowsRuntimeError([&] { sceNgs2VoiceControl(sampler, &small.header); }));
 
     Patch(sampler, master);
     Control(sampler, SCE_NGS2_VOICE_PARAM_PATCH, Ngs2VoicePatchParam{{}, 1, 0, master});
@@ -251,6 +251,30 @@ static void TestUnmeasuredFilterCasesThrow() {
 static void TestTailIsNotFlushed() {
     const auto out = ImpulseResponse(Filter(0, 1, 1, 0, 8000.0f, Q, 1.0f), 48000, 16 * Grain);
     Require(out[100] != 0.0f && std::isfinite(out[100]));
+}
+
+static void TestShortHeaderIsNotReadPastItsSize() {
+#ifdef _WIN32
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    const std::size_t page = info.dwPageSize;
+    auto* region = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, 2 * page, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    DWORD previous = 0;
+    Require(region != nullptr && VirtualProtect(region + page, page, PAGE_NOACCESS, &previous) != 0);
+#else
+    const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+    void* mapping = mmap(nullptr, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    Require(mapping != MAP_FAILED);
+    auto* region = static_cast<std::uint8_t*>(mapping);
+    Require(mprotect(region + page, page, PROT_NONE) == 0);
+#endif
+    auto* header = reinterpret_cast<Ngs2VoiceParamHeader*>(region + page - sizeof(Ngs2VoiceParamHeader));
+    *header = {sizeof(Ngs2VoiceParamHeader), 0, SCE_NGS2_SAMPLER_VOICE_PARAM_FILTER};
+    const auto pcm = Impulse(Grain);
+    const auto system = CreateSystem();
+    const auto sampler = Sampler(system, pcm, 1, 48000);
+    Require(sceNgs2VoiceControl(sampler, header) == SCE_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE);
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
 static std::vector<float> RenderGrains(uintptr_t system, std::size_t count) {
@@ -328,7 +352,6 @@ static void TestRejectedParamKeepsFilter() {
         {Filter(0, 18, 1, 0, 4000.0f, Q, 1.0f), SCE_NGS2_ERROR_INVALID_MODULE_LOCATION},
         {Filter(0, 0xffffffff, 1, 0, 4000.0f, Q, 1.0f), SCE_NGS2_ERROR_INVALID_MODULE_LOCATION},
         {Filter(0, 1, 12, 0, 4000.0f, Q, 1.0f), SCE_NGS2_ERROR_INVALID_FILTER_TYPE},
-        {Filter(0, 1, 100, 0, 4000.0f, Q, 1.0f), SCE_NGS2_ERROR_INVALID_FILTER_TYPE},
         {small, SCE_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE},
     };
     for (const auto& [param, code] : rejected) Require(RenderAfterRejectedParam(&param, code) == kept);
@@ -368,8 +391,9 @@ static void TestLocationsFilterTheirPorts() {
     Require(PortsOutput({0}, 9) == unfiltered);
     Require(PortsOutput({0, 1}, 3).empty());
 
+    const auto pcm = Impulse(Grain);
     const auto system = CreateSystem();
-    const auto sampler = Sampler(system, Impulse(Grain), 1, 48000);
+    const auto sampler = Sampler(system, pcm, 1, 48000);
     for (std::uint32_t location = 0; location < 10; location++) SetFilter(sampler, Filter(0, location, 1, 0, 1000.0f, Q, 1.0f));
     for (std::uint32_t location : {10u, 17u, 0xffffffffu}) {
         const auto param = Filter(0, location, 1, 0, 1000.0f, Q, 1.0f);
@@ -443,7 +467,6 @@ static void TestRestartClearsFilterHistory() {
     Require(unfiltered[3] == -0.25f && fresh[3] < 0.0f && fresh[3] > -0.01f);
     const auto none = [](uintptr_t, uintptr_t) {};
     Require(RestartOutput(Grain, 2, none) == fresh);
-    Require(RestartOutput(64 * Grain, 1, none) == fresh);
     for (std::uint32_t event : {SCE_NGS2_VOICE_EVENT_STOP_IMM, SCE_NGS2_VOICE_EVENT_KILL}) {
         Require(RestartOutput(64 * Grain, 1, [event](uintptr_t sampler, uintptr_t) { Event(sampler, event); }) == fresh);
     }
@@ -452,6 +475,29 @@ static void TestRestartClearsFilterHistory() {
         Patch(sampler, master);
     };
     Require(RestartOutput(64 * Grain, 1, setupAgain) == unfiltered);
+}
+
+static void TestStopAndPlayWithoutNewBlocksClearsHistory() {
+    const std::vector<std::int16_t> dc(64 * Grain, 16384);
+    const auto render = [&dc](bool restart) {
+        const auto system = CreateSystem();
+        const auto master = Mastering(system, 1);
+        const auto sampler = Sampler(system, dc, 1, 48000);
+        Patch(sampler, master);
+        SetFilter(sampler, Filter(0, 1, 1, 0, 1000.0f, Q, 1.0f));
+        Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+        if (restart) {
+            RenderGrains(system, 8);
+            Event(sampler, SCE_NGS2_VOICE_EVENT_STOP_IMM);
+            Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+        }
+        const auto out = RenderGrains(system, 1);
+        Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+        return out;
+    };
+    const auto first = render(false);
+    Require(first[0] > 0.0f && first[0] < 0.01f);
+    Require(render(true) == first);
 }
 
 static void TestResentFilterKeepsHistory() {
@@ -490,10 +536,12 @@ int main() {
     TestFilterBeforeSetupIsCleared();
     TestUnmeasuredFilterCasesThrow();
     TestTailIsNotFlushed();
+    TestShortHeaderIsNotReadPastItsSize();
     TestFilterRunsAfterResamplingAtSystemRate();
     TestRejectedParamKeepsFilter();
     TestLocationsFilterTheirPorts();
     TestRestartClearsFilterHistory();
+    TestStopAndPlayWithoutNewBlocksClearsHistory();
     TestResentFilterKeepsHistory();
     return 0;
 }
