@@ -1727,6 +1727,88 @@ static void TestAllocator() {
     Require(sceNgs2RackDestroy(master, nullptr) == SCE_NGS2_ERROR_INVALID_RACK_HANDLE);
 }
 
+static void TestPortMatrixIdRanges() {
+    const float spread = 0.5f * HalfPower;
+    const std::vector<float> silent{0.0f, 0.0f};
+    const std::vector<float> preset{0.5f, 0.25f};
+    const std::vector<float> other{1.5f, -1.0f};
+
+    auto chain = MatrixSampler(4, 0, 0);
+    Require(SetLevels(chain.sampler, 1, preset.data(), 2, false) == SCE_NGS2_OK);
+    Require(SetLevels(chain.sampler, 3, preset.data(), 0, true) == SCE_NGS2_OK);
+    Require(SetLevels(chain.sampler, 4, preset.data(), 2, false) == SCE_NGS2_ERROR_INVALID_VOICE_MATRIX_INDEX);
+    for (std::int32_t id : {-1, 0, 2, 4, 15, 16}) {
+        Require(SetPortMatrix(chain.sampler, id) == SCE_NGS2_OK && PortMatrixId(chain.sampler) == id);
+        Require(StereoFrame(chain.system) == (std::vector<float>{spread, spread}));
+    }
+    Require(SetPortMatrix(chain.sampler, 1) == SCE_NGS2_OK && StereoFrame(chain.system) == (std::vector<float>{0.25f, 0.125f}));
+    Require(SetPortMatrix(chain.sampler, 3) == SCE_NGS2_OK && StereoFrame(chain.system) == silent);
+    Require(SetPortMatrix(chain.sampler, 19) == SCE_NGS2_OK && StereoFrame(chain.system) == silent);
+    Require(sceNgs2SystemDestroy(chain.system, nullptr) == SCE_NGS2_OK);
+
+    for (std::uint32_t maxMatrices : {17u, 32u}) {
+        chain = MatrixSampler(maxMatrices, 0, 0);
+        Require(SetLevels(chain.sampler, 15, preset.data(), 2, false) == SCE_NGS2_OK);
+        for (std::uint32_t id = 16; id < std::min(maxMatrices, 20u); id++) Require(SetLevels(chain.sampler, id, other.data(), 2, true) == SCE_NGS2_OK);
+        Require(SetPortMatrix(chain.sampler, 15) == SCE_NGS2_OK && StereoFrame(chain.system) == (std::vector<float>{0.25f, 0.125f}));
+        Require(SetPortMatrix(chain.sampler, 16) == SCE_NGS2_OK && PortMatrixId(chain.sampler) == 16);
+        Require(StereoFrame(chain.system) == (std::vector<float>{spread, spread}));
+        Require(SetPortMatrix(chain.sampler, 19) == SCE_NGS2_OK && StereoFrame(chain.system) == silent);
+        Require(SetPortMatrix(chain.sampler, 17) == SCE_NGS2_OK);
+        std::vector<float> out(Grain * 2);
+        const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 2};
+        Require(ThrowsRuntime([&] { sceNgs2SystemRender(chain.system, &info, 1); }));
+        Require(sceNgs2SystemDestroy(chain.system, nullptr) == SCE_NGS2_OK);
+    }
+
+    const auto system = CreateSystem();
+    for (std::uint32_t maxMatrices : {1u, 17u}) {
+        Ngs2SubmixerRackOption submixerOption{};
+        submixerOption.rack_option.size = sizeof(submixerOption);
+        submixerOption.rack_option.max_grain_samples = 512;
+        submixerOption.rack_option.max_voices = 1;
+        submixerOption.rack_option.max_matrices = maxMatrices;
+        submixerOption.rack_option.max_ports = 1;
+        submixerOption.max_channels = 2;
+        submixerOption.max_inputs = 1;
+        Ngs2ContextBufferInfo submixerQuery{};
+        Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_SUBMIXER, &submixerOption.rack_option, &submixerQuery) == SCE_NGS2_OK);
+        const auto submixerBuffer = Buffer(submixerQuery);
+        uintptr_t submixerRack = 0;
+        Require(sceNgs2RackCreate(system, SCE_NGS2_RACK_ID_SUBMIXER, &submixerOption.rack_option, &submixerBuffer, &submixerRack) == SCE_NGS2_OK);
+        const auto submixer = Voice(submixerRack);
+        Control(submixer, SCE_NGS2_SUBMIXER_VOICE_PARAM_SETUP, Ngs2SubmixerVoiceSetupParam{{}, 2, 0});
+        const std::int32_t last = std::min<std::int32_t>(static_cast<std::int32_t>(maxMatrices), 16) - 1;
+        for (std::int32_t id : {-1, last}) Require(SetPortMatrix(submixer, id) == SCE_NGS2_OK && PortMatrixId(submixer) == id);
+        for (std::int32_t id : {last + 1, 16, 19, 20, -2}) Require(ThrowsRuntime([&] { SetPortMatrix(submixer, id); }) && PortMatrixId(submixer) == last);
+    }
+
+    Ngs2SamplerRackOption option{};
+    option.rack_option.size = sizeof(option);
+    option.rack_option.max_grain_samples = 512;
+    option.rack_option.max_voices = 1;
+    option.rack_option.max_matrices = 1;
+    option.rack_option.max_ports = 8;
+    Ngs2ContextBufferInfo query{};
+    Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_SAMPLER, &option.rack_option, &query) == SCE_NGS2_OK);
+    const auto buffer = Buffer(query);
+    option.rack_option.max_matrices = 0;
+    const Ngs2BufferAllocator allocator{Allocate, Release, 9};
+    const int before = allocations;
+    uintptr_t rack = 0;
+    Require(sceNgs2RackCreate(system, SCE_NGS2_RACK_ID_SAMPLER, &option.rack_option, &buffer, &rack) == SCE_NGS2_ERROR_INVALID_NUM_MATRICES && rack == 0);
+    Require(sceNgs2RackCreateWithAllocator(system, SCE_NGS2_RACK_ID_SAMPLER, &option.rack_option, &allocator, &rack) == SCE_NGS2_ERROR_INVALID_NUM_MATRICES);
+    Require(rack == 0 && allocations == before);
+    Ngs2MasteringRackOption mastering{};
+    mastering.rack_option.size = sizeof(mastering);
+    mastering.rack_option.max_grain_samples = 512;
+    mastering.rack_option.max_voices = 1;
+    mastering.max_channels = 2;
+    Require(mastering.rack_option.max_matrices == 0);
+    Require(sceNgs2RackCreate(system, SCE_NGS2_RACK_ID_MASTERING, &mastering.rack_option, &buffer, &rack) == SCE_NGS2_OK && rack != 0);
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+}
+
 static uintptr_t exitSystem = 0;
 
 static void RenderAfterStaticTeardown() {
@@ -1777,6 +1859,7 @@ int main() {
     TestRenderBigEndianThrows();
     TestSilentRenderValidation();
     TestAllocator();
+    TestPortMatrixIdRanges();
     exitSystem = CreateSystem();
     return 0;
 }

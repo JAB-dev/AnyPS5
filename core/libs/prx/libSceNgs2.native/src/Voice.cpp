@@ -17,6 +17,7 @@ static constexpr std::uint32_t COMMAND_PORT_MATRIX = 7;
 static constexpr std::uint8_t COMMAND_TYPE_FLOAT = 1;
 static constexpr std::uint8_t COMMAND_TYPE_INT = 3;
 static constexpr std::uint8_t COMMAND_TYPE_UINT = 4;
+static constexpr std::int32_t FIRST_TEMPLATE_MATRIX = 16;
 static constexpr std::int32_t MAX_PORT_MATRIX_ID = 19;
 
 struct Ngs2ReturnCode {
@@ -116,6 +117,10 @@ static void SetMatrixLevels(Ngs2Voice& voice, std::uint32_t matrixId, const floa
 }
 
 static void SetPortMatrix(Ngs2Voice& voice, std::uint32_t port, std::int32_t matrixId) {
+    const bool own = matrixId >= -1 && matrixId < std::min(static_cast<std::int32_t>(voice.matrices.size()), FIRST_TEMPLATE_MATRIX);
+    if (!own && voice.rack->rackId != SCE_NGS2_RACK_ID_SAMPLER) {
+        throw std::runtime_error("NGS2: port matrix " + std::to_string(matrixId) + " past the voice's matrices is not implemented for rack " + Ngs2Hex(voice.rack->rackId));
+    }
     if (matrixId < -1 || matrixId > MAX_PORT_MATRIX_ID) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_MATRIX_INDEX};
     PortAt(voice, port).matrix = matrixId;
 }

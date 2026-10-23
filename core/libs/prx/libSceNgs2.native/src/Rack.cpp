@@ -112,6 +112,7 @@ static int CheckedRackOption(std::uint32_t rackId, const Ngs2RackOption* option,
         }
         throw std::invalid_argument("NGS2: invalid rack voice or channel count");
     }
+    if (rackId == SCE_NGS2_RACK_ID_SAMPLER && options.common.max_matrices == 0) return SCE_NGS2_ERROR_INVALID_NUM_MATRICES;
     if (rackId == SCE_NGS2_RACK_ID_REVERB && options.reverb.reverb_size != 1) {
         throw std::runtime_error("NGS2: reverb rack size " + std::to_string(options.reverb.reverb_size) + " is not implemented");
     }

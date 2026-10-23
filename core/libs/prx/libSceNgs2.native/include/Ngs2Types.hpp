@@ -19,6 +19,7 @@ static constexpr int SCE_NGS2_ERROR_INVALID_WAVEFORM_TYPE = static_cast<int>(0x8
 static constexpr int SCE_NGS2_ERROR_INVALID_RENDER_BUFFER = static_cast<int>(0x804A8251);
 static constexpr int SCE_NGS2_ERROR_INVALID_NUM_RENDER_BUFFERS = static_cast<int>(0x804A830B);
 static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_INDEX = static_cast<int>(0x804A8305);
+static constexpr int SCE_NGS2_ERROR_INVALID_NUM_MATRICES = static_cast<int>(0x804A830F);
 static constexpr int SCE_NGS2_ERROR_INVALID_NUM_GRAIN_SAMPLES = static_cast<int>(0x804A8310);
 static constexpr int SCE_NGS2_ERROR_INVALID_MAX_GRAIN_SAMPLES = static_cast<int>(0x804A8311);
 static constexpr int SCE_NGS2_ERROR_INVALID_WAVEFORM_DATA = static_cast<int>(0x804A8430);
