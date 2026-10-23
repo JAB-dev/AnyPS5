@@ -219,8 +219,14 @@ float Ngs2DefaultLevel(std::uint32_t sourceChannels, std::uint32_t source, std::
     }
 }
 
+static constexpr std::int32_t DEFAULT_TEMPLATE_MATRIX = 16;
+static constexpr std::int32_t SILENT_TEMPLATE_MATRIX = 19;
+
 static void MixPort(Ngs2Voice& voice, const Ngs2Voice& source, const Ngs2Port& port, std::uint32_t grain) {
-    const auto* matrix = port.matrix < 0 || source.matrices[port.matrix].empty() ? nullptr : &source.matrices[port.matrix];
+    if (port.matrix == SILENT_TEMPLATE_MATRIX) return;
+    if (port.matrix > DEFAULT_TEMPLATE_MATRIX) throw std::runtime_error("NGS2: template matrix " + std::to_string(port.matrix) + " is not implemented");
+    const bool own = port.matrix >= 0 && static_cast<std::size_t>(port.matrix) < source.matrices.size() && source.matrices[port.matrix].has_value();
+    const auto* matrix = own ? &*source.matrices[port.matrix] : nullptr;
     const std::size_t outputs = matrix == nullptr ? voice.channels : std::min<std::size_t>(voice.channels, matrix->size() / source.channels);
     for (std::size_t dst = 0; dst < outputs; dst++) {
         for (std::uint32_t src = 0; src < source.channels; src++) {

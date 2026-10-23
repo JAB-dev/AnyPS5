@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <initializer_list>
 #include <iostream>
@@ -35,19 +36,29 @@ static void Invalid(std::string_view api, uintptr_t handle) {
     Require(std::all_of(output.begin(), output.end(), [](auto byte) { return byte == 0xa5; }));
 }
 
-template <typename TException>
-static bool MatrixInfoThrows(uintptr_t voice, std::uint32_t matrixId) {
+static constexpr int BadMatrix = static_cast<int>(0x804A8355u);
+
+static void MatrixIndexFirst(uintptr_t voice, std::uint32_t matrixId) {
     Ngs2VoiceMatrixInfo info;
     std::memset(&info, 0xa5, sizeof(info));
-    bool threw = false;
-    try {
-        sceNgs2VoiceGetMatrixInfo(voice, matrixId, &info, sizeof(info));
-    } catch (const TException&) {
-        threw = true;
+    for (std::size_t size : {sizeof(info), std::size_t{260}}) {
+        Status(sceNgs2VoiceGetMatrixInfo(voice, matrixId, &info, size), BadMatrix, "GetMatrixInfo accepted a matrix id past max_matrices");
+        Status(sceNgs2VoiceGetMatrixInfo(voice, matrixId, nullptr, size), BadMatrix, "GetMatrixInfo checked the output before the matrix id");
     }
     const auto* bytes = reinterpret_cast<const unsigned char*>(&info);
     Require(std::all_of(bytes, bytes + sizeof(info), [](auto byte) { return byte == 0xa5; }));
-    return threw;
+}
+
+static std::uint32_t Bits(float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static float FromBits(std::uint32_t bits) {
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
 }
 
 static void MatrixInfo() {
@@ -56,28 +67,45 @@ static void MatrixInfo() {
     Status(sceNgs2VoiceGetMatrixInfo(0x1234, 0, &info, sizeof(info)), InvalidVoice, "GetMatrixInfo accepted an invalid voice");
     const auto* bytes = reinterpret_cast<const unsigned char*>(&info);
     Require(std::all_of(bytes, bytes + sizeof(info), [](auto byte) { return byte == 0xa5; }));
-    Status(sceNgs2VoiceGetMatrixInfo(0x1234, 0, nullptr, sizeof(info)), SCE_NGS2_ERROR_INVALID_OUT_ADDRESS, "GetMatrixInfo checked the voice before null output");
-    Status(sceNgs2VoiceGetMatrixInfo(0x1234, 0, &info, sizeof(info) - 1), SCE_NGS2_ERROR_INVALID_OUT_SIZE, "GetMatrixInfo checked the voice before the output size");
+    Require(sizeof(info) == 5480);
     const auto system = CreateSystem();
     const auto rack = CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER);
     const auto voice = Voice(rack);
+    Status(sceNgs2VoiceGetMatrixInfo(voice, 0, nullptr, sizeof(info)), SCE_NGS2_ERROR_INVALID_OUT_ADDRESS, "GetMatrixInfo lost null-output validation");
+    Status(sceNgs2VoiceGetMatrixInfo(voice, 0, nullptr, 260), SCE_NGS2_ERROR_INVALID_OUT_ADDRESS, "GetMatrixInfo checked the size before null output");
+    for (std::size_t size : {std::size_t{8}, std::size_t{260}, sizeof(info) - 1}) {
+        Status(sceNgs2VoiceGetMatrixInfo(voice, 0, &info, size), SCE_NGS2_ERROR_INVALID_OUT_SIZE, "GetMatrixInfo accepted a size below 5480");
+    }
+    Require(std::all_of(bytes, bytes + sizeof(info), [](auto byte) { return byte == 0xa5; }));
     Status(sceNgs2VoiceGetMatrixInfo(voice, 0, &info, sizeof(info)), SCE_NGS2_OK, "GetMatrixInfo failed for a matrix without levels");
     Require(info.num_levels == 0 && std::all_of(std::begin(info.levels), std::end(info.levels), [](float level) { return level == 0.0f; }));
-    const float levels[4] = {1.0f, 0.5f, -5.0f, 6.0f};
-    Control(voice, SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS, Ngs2VoiceMatrixLevelsParam{{}, 0, 4, levels});
-    std::memset(&info, 0xa5, sizeof(info));
-    Status(sceNgs2VoiceGetMatrixInfo(voice, 0, &info, sizeof(info)), SCE_NGS2_OK, "GetMatrixInfo failed for a matrix with levels");
-    Require(info.num_levels == 4 && info.levels[0] == 1.0f && info.levels[1] == 0.5f && info.levels[2] == -4.0f && info.levels[3] == 4.0f);
-    Require(std::all_of(std::begin(info.levels) + 4, std::end(info.levels), [](float level) { return level == 0.0f; }));
+    const std::array<std::uint32_t, 8> raw{Bits(-5.0f), Bits(6.0f), 0x7fc00000u, 0xffc00000u, 0x80000000u, Bits(1e-40f), Bits(3e38f), Bits(-INFINITY)};
+    std::array<float, raw.size()> levels{};
+    std::transform(raw.begin(), raw.end(), levels.begin(), FromBits);
+    for (bool command : {false, true}) {
+        Control(voice, SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS, Ngs2VoiceMatrixLevelsParam{{}, 0, 2, levels.data() + 6});
+        if (command) {
+            const Ngs2VoiceCommand set{5, 0, 0x11, static_cast<std::uint16_t>(levels.size()), {.levels = levels.data()}};
+            Status(sceNgs2VoiceRunCommands(voice, &set, 1), SCE_NGS2_OK, "RunCommands rejected raw matrix levels");
+        } else {
+            Control(voice, SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS, Ngs2VoiceMatrixLevelsParam{{}, 0, static_cast<std::uint32_t>(levels.size()), levels.data()});
+        }
+        std::memset(&info, 0xa5, sizeof(info));
+        Status(sceNgs2VoiceGetMatrixInfo(voice, 0, &info, sizeof(info)), SCE_NGS2_OK, "GetMatrixInfo failed for a matrix with levels");
+        Require(info.num_levels == raw.size() && std::equal(raw.begin(), raw.end(), info.levels, [](std::uint32_t bits, float level) { return Bits(level) == bits; }));
+        Require(std::all_of(std::begin(info.levels) + raw.size(), std::end(info.levels), [](float level) { return Bits(level) == 0; }));
+    }
     std::array<float, 64> full{};
     for (std::size_t i = 0; i < full.size(); i++) full[i] = static_cast<float>(i) / 64.0f;
     Control(voice, SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS, Ngs2VoiceMatrixLevelsParam{{}, 0, 64, full.data()});
     Status(sceNgs2VoiceGetMatrixInfo(voice, 0, &info, sizeof(info)), SCE_NGS2_OK, "GetMatrixInfo failed for 64 levels");
     Require(info.num_levels == 64 && std::equal(full.begin(), full.end(), info.levels));
-    Status(sceNgs2VoiceGetMatrixInfo(voice, 0, &info, sizeof(info) + 1), SCE_NGS2_ERROR_INVALID_OUT_SIZE, "GetMatrixInfo accepted a larger output");
-    Require(MatrixInfoThrows<std::invalid_argument>(voice, 1));
+    std::array<unsigned char, sizeof(info) + 1> larger{};
+    Status(sceNgs2VoiceGetMatrixInfo(voice, 0, reinterpret_cast<Ngs2VoiceMatrixInfo*>(larger.data()), larger.size()), SCE_NGS2_OK, "GetMatrixInfo rejected a larger output");
+    Require(larger.back() == 0 && std::equal(bytes, bytes + sizeof(info), larger.begin()));
+    MatrixIndexFirst(voice, 1);
     const auto master = Voice(CreateRack(system, SCE_NGS2_RACK_ID_MASTERING));
-    Require(MatrixInfoThrows<std::invalid_argument>(master, 0));
+    MatrixIndexFirst(master, 0);
     Require(sceNgs2RackDestroy(rack, nullptr) == SCE_NGS2_OK);
     Status(sceNgs2VoiceGetMatrixInfo(voice, 0, &info, sizeof(info)), InvalidVoice, "GetMatrixInfo accepted a voice of a destroyed rack");
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);

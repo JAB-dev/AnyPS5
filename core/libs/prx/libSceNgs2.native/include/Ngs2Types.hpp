@@ -11,6 +11,7 @@ static constexpr int SCE_NGS2_ERROR_INVALID_OUT_ADDRESS = static_cast<int>(0x804
 static constexpr int SCE_NGS2_ERROR_INVALID_OUT_SIZE = static_cast<int>(0x804A8011);
 static constexpr int SCE_NGS2_ERROR_INVALID_BUFFER_INFO = static_cast<int>(0x804A8020);
 static constexpr int SCE_NGS2_ERROR_INVALID_BUFFER_ALLOCATOR = static_cast<int>(0x804A8023);
+static constexpr int SCE_NGS2_ERROR_INVALID_PARAM_ADDRESS = static_cast<int>(0x804A8030);
 static constexpr int SCE_NGS2_ERROR_INVALID_SAMPLE_RATE = static_cast<int>(0x804A8051);
 static constexpr int SCE_NGS2_ERROR_INVALID_SYSTEM_HANDLE = static_cast<int>(0x804A8201);
 static constexpr int SCE_NGS2_ERROR_INVALID_RACK_HANDLE = static_cast<int>(0x804A8202);
@@ -27,6 +28,9 @@ static constexpr int SCE_NGS2_ERROR_INVALID_PAN_UNIT_ANGLE = static_cast<int>(0x
 static constexpr int SCE_NGS2_ERROR_INVALID_PAN_SPEAKER = static_cast<int>(0x804A8451);
 static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_HANDLE = static_cast<int>(0x804A8203);
 static constexpr int SCE_NGS2_ERROR_NULL_PARAM_LIST = static_cast<int>(0x804A8360);
+static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_MATRIX_INDEX = static_cast<int>(0x804A8355);
+static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_OUTPUT_INDEX = static_cast<int>(0x804A8357);
+static constexpr int SCE_NGS2_ERROR_INVALID_NUM_MATRIX_VOLUMES = static_cast<int>(0x804A835D);
 static constexpr int SCE_NGS2_ERROR_INVALID_GEOM_LISTENER_ADDRESS = static_cast<int>(0x804A8461);
 static constexpr int SCE_NGS2_ERROR_INVALID_GEOM_FLAG = static_cast<int>(0x804A8463);
 static constexpr int SCE_NGS2_ERROR_INVALID_OPTION_SIZE = static_cast<int>(0x804A8013);
@@ -668,11 +672,13 @@ struct Ngs2VoicePortInfo {
 };
 static_assert(sizeof(Ngs2VoicePortInfo) == 24);
 
+static constexpr std::uint32_t SCE_NGS2_MAX_MATRIX_LEVELS = 37 * 37;
+
 struct Ngs2VoiceMatrixInfo {
     std::uint32_t num_levels;
-    float levels[64];
+    float levels[SCE_NGS2_MAX_MATRIX_LEVELS];
 };
-static_assert(sizeof(Ngs2VoiceMatrixInfo) == 260);
+static_assert(sizeof(Ngs2VoiceMatrixInfo) == 5480);
 
 struct Ngs2VoiceState {
     std::uint32_t state_flags;

@@ -7,6 +7,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -134,7 +135,7 @@ struct Ngs2Voice {
     std::uintptr_t callbackData = 0;
     std::uint32_t callbackFlags = 0;
     std::vector<Ngs2Port> ports;
-    std::vector<std::vector<float>> matrices;
+    std::vector<std::optional<std::vector<float>>> matrices;
     std::vector<Ngs2Filter> filters;
     std::uint32_t outputId = 0;
     float fbwLevel = 1.0f;
@@ -162,6 +163,7 @@ struct Ngs2Rack {
     char name[64] = {};
     std::uint32_t maxChannels = 0;
     std::uint32_t maxFilters = 0;
+    std::uint64_t maxMatrixLevels = 0;
     std::uint32_t maxGrainSamples = 0;
     std::uint32_t maxChannelWorks = 0;
     std::uint32_t maxInputs = 0;
