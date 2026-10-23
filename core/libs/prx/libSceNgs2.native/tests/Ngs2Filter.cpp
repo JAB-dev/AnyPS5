@@ -196,6 +196,22 @@ static void TestFilterIndexReturnsCode() {
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
+static void TestFilterBeforeSetupIsCleared() {
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 1);
+    const auto sampler = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
+    SetFilter(sampler, Filter(0, 1, 1, 0, 1000.0f, Q, 1.0f));
+    const auto pcm = Impulse(Grain);
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}});
+    const Ngs2WaveformBlock block{0, pcm.size() * sizeof(std::int16_t), 0, 0, Grain, 0, 0};
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &block});
+    Patch(sampler, master);
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    const auto out = RenderGrain(system, 1);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == (i == 0 ? 0.5f : 0.0f));
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+}
+
 template <typename TCall>
 static bool ThrowsRuntimeError(TCall call) {
     try {
@@ -240,6 +256,7 @@ int main() {
     TestRejectedParams();
     TestFilterIndexReturnsCode();
     TestRateChangeUnderFilter();
+    TestFilterBeforeSetupIsCleared();
     TestUnmeasuredFilterCasesThrow();
     TestTailIsNotFlushed();
     return 0;
