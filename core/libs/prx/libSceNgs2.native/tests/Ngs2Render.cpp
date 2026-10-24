@@ -1449,6 +1449,10 @@ static void TestDefaultMapLikePs5() {
         for (std::uint32_t i = 0; i < Grain; i++) frames[i * channels + channel] = 16384;
         const Ngs2WaveformBlock block{0, frames.size() * sizeof(std::int16_t), 0, 0, Grain, 0, 0};
         Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, frames.data(), 0, 1, &block});
+        std::vector<float> identity(channels * channels, 0.0f);
+        for (std::uint32_t i = 0; i < channels; i++) identity[i * channels + i] = 1.0f;
+        Control(voice, SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS, Ngs2VoiceMatrixLevelsParam{{}, 0, channels * channels, identity.data()});
+        Control(voice, SCE_NGS2_VOICE_PARAM_PORT_MATRIX, Ngs2VoicePortMatrixParam{{}, 0, 0});
         Patch(voice, master);
         Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
         std::vector<float> out(Grain * outputChannels, -1.0f);
