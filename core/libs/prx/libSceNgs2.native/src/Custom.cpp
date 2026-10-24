@@ -221,7 +221,7 @@ void Ngs2ApplyCustomParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
         const auto index = param.id & 0x1f;
         const auto& custom = reinterpret_cast<const Ngs2CustomVoiceFilterParam&>(param);
         const auto& modules = voice.rack->customModuleIds;
-        if (custom.type == 1 && index < modules.size() && modules[index] == SCE_NGS2_CUSTOM_MODULE_ID_FILTER &&
+        if (custom.type >= 1 && custom.type <= 11 && index < modules.size() && modules[index] == SCE_NGS2_CUSTOM_MODULE_ID_FILTER &&
             std::any_of(modules.begin(), modules.begin() + index, [](std::uint32_t id) { return id != SCE_NGS2_CUSTOM_MODULE_ID_FILTER; })) {
             throw std::runtime_error("NGS2: a custom filter module after another module is not implemented");
         }
@@ -233,6 +233,9 @@ void Ngs2ApplyCustomParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
         filter.type = custom.type;
         filter.frequency = custom.param.fcq.frequency;
         filter.q = custom.param.fcq.q;
+        filter.level = custom.param.fcq.level;
+        filter.reserved[0] = custom.param.fcq.reserved;
+        filter.reserved[1] = custom.param.fcq.reserved2;
         Ngs2SetFilter(voice, filter);
         return;
     }

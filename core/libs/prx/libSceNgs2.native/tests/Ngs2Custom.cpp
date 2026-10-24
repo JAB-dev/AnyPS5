@@ -349,9 +349,6 @@ static void TestCustomFilter() {
     Require(sceNgs2SystemRender(system, &renderInfo, 1) == SCE_NGS2_OK);
     Require(out[0] > 0.0f && out[0] < 0.2f && out.back() > out[0]);
 
-    Ngs2CustomVoiceFilterParam unsupported{};
-    unsupported.type = 2;
-    Require(ControlThrows<std::runtime_error>(voice, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER, unsupported));
     Control(voice, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER, Ngs2CustomVoiceFilterParam{});
     Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS,
             Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 1, &block});
@@ -895,6 +892,14 @@ static void TestCustomFilterMatchesSampler() {
     Require(sceNgs2VoiceControl(ordered, &filter.header) == SCE_NGS2_ERROR_INVALID_VOICE_PARAM_ID);
     Require(ControlThrows<std::runtime_error>(ordered, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER | 1, filter));
     Require(ControlThrows<std::runtime_error>(ordered, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER, filter));
+    for (const std::uint32_t type : {2u, 9u, 11u}) {
+        auto other = filter;
+        other.type = type;
+        Require(ControlThrows<std::runtime_error>(ordered, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER | 1, other));
+    }
+    filter.type = 0;
+    Control(ordered, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER | 1, filter);
+    filter.type = 1;
 
     auto submixer = RackOption(&userFx, 1);
     submixer.custom_rack_option.module[0] = {};

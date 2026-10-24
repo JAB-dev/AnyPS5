@@ -144,15 +144,33 @@ static void ApplyFilter(Ngs2Voice& voice, Ngs2Filter& filter, std::uint32_t grai
             if (port != target && voice.ports[port].dest != nullptr) throw std::runtime_error("NGS2: a PRE_SEND sampler filter on a voice with another patched port is not implemented");
         }
     }
+    if (grain % 4 != 0) throw std::runtime_error("NGS2: a sampler filter with a grain that is not a multiple of 4 is not implemented");
+    const std::uint64_t channels = (std::uint64_t{1} << voice.channels) - 1;
+    const std::uint64_t bypassed = filter.bypassMask & channels;
+    if (filter.type > 1 && bypassed != 0 && bypassed != channels) {
+        throw std::runtime_error("NGS2: sampler filter type " + std::to_string(filter.type) + " with a partial channel mask is not implemented");
+    }
     for (std::uint32_t channel = 0; channel < voice.channels; channel++) {
         if (Bypasses(filter, channel)) continue;
         auto& h = filter.history[channel];
-        for (std::uint32_t i = 0; i < grain; i++) {
-            auto& sample = voice.samples[channel * grain + i];
-            const double x = sample;
-            const double y = filter.b0 * x + filter.b1 * h.x1 + filter.b2 * h.x2 - filter.a1 * h.y1 - filter.a2 * h.y2;
-            h = {x, h.x1, y, h.y1};
-            sample = static_cast<float>(y);
+        float* samples = voice.samples.data() + static_cast<std::size_t>(channel) * grain;
+        for (std::uint32_t k = 0; k < grain; k += 4) {
+            const float x[4] = {samples[k], samples[k + 1], samples[k + 2], samples[k + 3]};
+            float y[4];
+            for (int j = 0; j < 4; j++) {
+                const auto weight = [&](int m) { return m <= j ? filter.h[j - m] : 0.0f; };
+                float a = weight(2) * x[2];
+                a = std::fma(filter.e2[j], h.x2, a);
+                a = std::fma(weight(0), x[0], a);
+                a = std::fma(filter.d[j], h.y2, a);
+                float b = weight(3) * x[3];
+                b = std::fma(filter.e1[j], h.x1, b);
+                b = std::fma(weight(1), x[1], b);
+                b = std::fma(filter.c[j], h.y1, b);
+                y[j] = a + b;
+            }
+            h = {x[3], x[2], y[3], y[2]};
+            std::copy(y, y + 4, samples + k);
         }
     }
 }

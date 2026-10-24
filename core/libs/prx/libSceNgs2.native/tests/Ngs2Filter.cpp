@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
-#include <numbers>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -98,6 +100,90 @@ static std::vector<float> ImpulseResponse(const Ngs2SamplerVoiceFilterParam& par
 
 static void RequireResponse(const std::vector<float>& out, const Response& expected, float tolerance) {
     for (std::size_t i = 0; i < expected.size(); i++) Require(std::abs(out[i] - expected[i]) <= tolerance * std::abs(expected[i]));
+}
+
+struct Coefficients {
+    float i0;
+    float i1;
+    float i2;
+    float o1;
+    float o2;
+};
+
+static float Bits(std::uint32_t bits) {
+    return std::bit_cast<float>(bits);
+}
+
+static Coefficients Cookbook(std::uint32_t b0, std::uint32_t b1, std::uint32_t b2, std::uint32_t a1, std::uint32_t a2) {
+    return {Bits(b0), Bits(b1), Bits(b2), -Bits(a1), -Bits(a2)};
+}
+
+static const Coefficients LOW_PASS_1000 = Cookbook(0x3b805256, 0x3c005256, 0x3b805256, 0xbfe85c56, 0x3f54bb3f);
+static const Coefficients LOW_PASS_4000 = Cookbook(0x3d4ab3f0, 0x3dcab3f0, 0x3d4ab3f0, 0xbfa3c957, 0x3ef47f54);
+
+struct BlockWeights {
+    float h[4];
+    float c[4];
+    float d[4];
+    float e1[4];
+    float e2[4];
+};
+
+static BlockWeights Expand(const Coefficients& f) {
+    BlockWeights b{};
+    b.h[0] = f.i0;
+    b.h[1] = f.i1 + f.o1 * b.h[0];
+    b.h[2] = (f.i2 + f.o2 * b.h[0]) + f.o1 * b.h[1];
+    b.h[3] = f.o2 * b.h[1] + f.o1 * b.h[2];
+    b.c[0] = f.o1;
+    b.c[1] = f.o2 + f.o1 * b.c[0];
+    b.c[2] = f.o2 * b.c[0] + f.o1 * b.c[1];
+    b.c[3] = f.o2 * b.c[1] + f.o1 * b.c[2];
+    b.d[0] = f.o2;
+    b.d[1] = f.o1 * b.d[0];
+    b.d[2] = f.o2 * b.d[0] + f.o1 * b.d[1];
+    b.d[3] = f.o2 * b.d[1] + f.o1 * b.d[2];
+    b.e1[0] = f.i1;
+    b.e1[1] = f.i2 + f.o1 * b.e1[0];
+    b.e1[2] = f.o2 * b.e1[0] + f.o1 * b.e1[1];
+    b.e1[3] = f.o2 * b.e1[1] + f.o1 * b.e1[2];
+    b.e2[0] = f.i2;
+    b.e2[1] = f.o1 * b.e2[0];
+    b.e2[2] = f.o2 * b.e2[0] + f.o1 * b.e2[1];
+    b.e2[3] = f.o2 * b.e2[1] + f.o1 * b.e2[2];
+    return b;
+}
+
+static std::vector<float> BlockModel(const std::vector<float>& u, const Coefficients& first, const Coefficients& second, std::size_t switchAt) {
+    const BlockWeights weights[2] = {Expand(first), Expand(second)};
+    std::vector<float> y(u.size(), 0.0f);
+    const auto input = [&u](std::ptrdiff_t i) { return i >= 0 ? u[static_cast<std::size_t>(i)] : 0.0f; };
+    const auto output = [&y](std::ptrdiff_t i) { return i >= 0 ? y[static_cast<std::size_t>(i)] : 0.0f; };
+    for (std::size_t k = 0; k < u.size(); k += 4) {
+        const auto& b = weights[k >= switchAt ? 1 : 0];
+        const auto at = static_cast<std::ptrdiff_t>(k);
+        for (int j = 0; j < 4; j++) {
+            const auto h = [&b, j](int m) { return m <= j ? b.h[j - m] : 0.0f; };
+            float a = h(2) * input(at + 2);
+            a = std::fma(b.e2[j], input(at - 2), a);
+            a = std::fma(h(0), input(at), a);
+            a = std::fma(b.d[j], output(at - 2), a);
+            float c = h(3) * input(at + 3);
+            c = std::fma(b.e1[j], input(at - 1), c);
+            c = std::fma(h(1), input(at + 1), c);
+            c = std::fma(b.c[j], output(at - 1), c);
+            y[k + static_cast<std::size_t>(j)] = a + c;
+        }
+    }
+    return y;
+}
+
+static std::vector<float> BlockModel(const std::vector<float>& u, const Coefficients& f) {
+    return BlockModel(u, f, f, u.size());
+}
+
+static bool SameBits(const std::vector<float>& a, const std::vector<float>& b) {
+    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
 }
 
 static void TestLowPassAndTail() {
@@ -233,8 +319,7 @@ static void TestUnmeasuredFilterCasesThrow() {
     const auto master = Mastering(system, 1);
     const auto pcm = Impulse(Grain);
     const auto sampler = Sampler(system, pcm, 1, 48000);
-    for (const auto& param : {Filter(0, 1, 2, 0, 1000.0f, Q, 1.0f), Filter(0, 1, 11, 0, 1000.0f, Q, 1.0f), Filter(8, 10, 1, 0, 1000.0f, Q, 1.0f),
-                              Filter(0, 10, 12, 0, 1000.0f, Q, 1.0f)}) {
+    for (const auto& param : {Filter(8, 10, 1, 0, 1000.0f, Q, 1.0f), Filter(0, 10, 12, 0, 1000.0f, Q, 1.0f)}) {
         Require(ThrowsRuntimeError([&] { sceNgs2VoiceControl(sampler, &param.header); }));
     }
 
@@ -302,28 +387,12 @@ static std::vector<float> ResampledOutput(std::uint32_t rate, float pitch, const
 }
 
 static void TestFilterRunsAfterResamplingAtSystemRate() {
-    const double omega = 2.0 * std::numbers::pi * 1000.0 / 48000.0;
-    const double alpha = std::sin(omega) / (2.0 * Q);
-    const double b0 = (1.0 - std::cos(omega)) / 2.0 / (1.0 + alpha);
-    const double a1 = -2.0 * std::cos(omega) / (1.0 + alpha);
-    const double a2 = (1.0 - alpha) / (1.0 + alpha);
     const std::pair<std::uint32_t, float> cases[] = {{24000, 1.0f}, {44100, 1.0f}, {96000, 1.0f}, {48000, 0.5f}, {48000, 2.0f}, {24000, 2.0f}};
     for (const auto& [rate, pitch] : cases) {
         const auto unfiltered = ResampledOutput(rate, pitch, Filter(0, 1, 0, 0, 0.0f, Q, 1.0f));
-        std::vector<double> expected;
-        double x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0, peak = 0.0;
-        for (const float x : unfiltered) {
-            const double y = b0 * x + 2.0 * b0 * x1 + b0 * x2 - a1 * y1 - a2 * y2;
-            x2 = x1;
-            x1 = x;
-            y2 = y1;
-            y1 = y;
-            expected.push_back(y);
-            peak = std::max(peak, std::abs(y));
-        }
-        Require(peak > 0.01);
+        Require(std::any_of(unfiltered.begin(), unfiltered.end(), [](float sample) { return sample > 0.01f; }));
         const auto front = ResampledOutput(rate, pitch, Filter(0, 0, 1, 0, 1000.0f, Q, 1.0f));
-        for (std::size_t i = 0; i < front.size(); i++) Require(std::abs(front[i] - expected[i]) <= 1e-5 * peak);
+        Require(SameBits(front, BlockModel(unfiltered, LOW_PASS_1000)));
         for (std::uint32_t location : {1u, 2u}) Require(ResampledOutput(rate, pitch, Filter(0, location, 1, 0, 1000.0f, Q, 1.0f)) == front);
     }
 }
@@ -429,13 +498,15 @@ static std::vector<std::int16_t> SecondBlock() {
     return pcm;
 }
 
-static std::vector<float> FreshOutput(bool filter) {
+static const Ngs2SamplerVoiceFilterParam LOW_PASS = Filter(0, 1, 1, 0, 1000.0f, Q, 1.0f);
+
+static std::vector<float> FreshOutput(const Ngs2SamplerVoiceFilterParam* filter) {
     const auto system = CreateSystem();
     const auto master = Mastering(system, 1);
     const auto pcm = SecondBlock();
     const auto sampler = Sampler(system, pcm, 1, 48000);
     Patch(sampler, master);
-    if (filter) SetFilter(sampler, Filter(0, 1, 1, 0, 1000.0f, Q, 1.0f));
+    if (filter != nullptr) SetFilter(sampler, *filter);
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
     const auto out = RenderGrains(system, 4);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
@@ -443,13 +514,13 @@ static std::vector<float> FreshOutput(bool filter) {
 }
 
 template <typename TBetween>
-static std::vector<float> RestartOutput(std::uint32_t firstFrames, std::size_t firstGrains, TBetween between) {
+static std::vector<float> RestartOutput(std::uint32_t firstFrames, std::size_t firstGrains, TBetween between, const Ngs2SamplerVoiceFilterParam& filter = LOW_PASS) {
     const auto system = CreateSystem();
     const auto master = Mastering(system, 1);
     const std::vector<std::int16_t> first(firstFrames, 16384);
     const auto sampler = Sampler(system, first, 1, 48000);
     Patch(sampler, master);
-    SetFilter(sampler, Filter(0, 1, 1, 0, 1000.0f, Q, 1.0f));
+    SetFilter(sampler, filter);
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
     RenderGrains(system, firstGrains);
     between(sampler, master);
@@ -462,8 +533,8 @@ static std::vector<float> RestartOutput(std::uint32_t firstFrames, std::size_t f
 }
 
 static void TestRestartClearsFilterHistory() {
-    const auto fresh = FreshOutput(true);
-    const auto unfiltered = FreshOutput(false);
+    const auto fresh = FreshOutput(&LOW_PASS);
+    const auto unfiltered = FreshOutput(nullptr);
     Require(unfiltered[3] == -0.25f && fresh[3] < 0.0f && fresh[3] > -0.01f);
     const auto none = [](uintptr_t, uintptr_t) {};
     Require(RestartOutput(Grain, 2, none) == fresh);
@@ -519,12 +590,310 @@ static void TestResentFilterKeepsHistory() {
     const auto same = Filter(0, 1, 1, 0, 1000.0f, Q, 1.0f);
     Require(render(&same) == render(nullptr));
     const auto higher = Filter(0, 1, 1, 0, 4000.0f, Q, 1.0f);
-    const auto out = render(&higher);
-    const double omega = 2.0 * std::numbers::pi * 4000.0 / 48000.0;
-    const double alpha = std::sin(omega) / (2.0 * Q);
-    const double a1 = -2.0 * std::cos(omega) / (1.0 + alpha);
-    const double a2 = (1.0 - alpha) / (1.0 + alpha);
-    for (std::size_t n = Grain; n < out.size(); n++) Require(std::abs(out[n] + a1 * out[n - 1] + a2 * out[n - 2]) <= 1e-5 * std::abs(out[n]));
+    std::vector<float> input(2 * Grain, 0.0f);
+    input[0] = 0.5f;
+    Require(SameBits(render(&higher), BlockModel(input, LOW_PASS_1000, LOW_PASS_4000, Grain)));
+}
+
+static constexpr std::size_t ORACLE_FRAMES = 2560;
+static constexpr std::size_t CLAMP_FRAMES = 512;
+static constexpr std::size_t ORACLE_IMPULSE_AT = 13;
+
+static Ngs2SamplerVoiceFilterParam Direct(const Coefficients& f) {
+    auto param = Filter(0, 1, 11, 0, f.i0, f.i1, f.i2);
+    auto* bytes = reinterpret_cast<std::uint8_t*>(&param);
+    std::memcpy(bytes + 0x28, &f.o1, sizeof(f.o1));
+    std::memcpy(bytes + 0x2C, &f.o2, sizeof(f.o2));
+    return param;
+}
+
+static Ngs2CustomVoiceFilterParam CustomFilter(const Ngs2SamplerVoiceFilterParam& sampler) {
+    Ngs2CustomVoiceFilterParam param{};
+    param.header = {sizeof(param), 0, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER};
+    param.channel_mask = sampler.channel_mask;
+    param.type = sampler.type;
+    param.param.fcq.frequency = sampler.frequency;
+    param.param.fcq.q = sampler.q;
+    param.param.fcq.level = sampler.level;
+    param.param.fcq.reserved = sampler.reserved[0];
+    param.param.fcq.reserved2 = sampler.reserved[1];
+    return param;
+}
+
+static uintptr_t CustomFilterVoice(uintptr_t system) {
+    Ngs2CustomSamplerRackOption option{};
+    option.custom_rack_option.rack_option.size = sizeof(option);
+    option.custom_rack_option.rack_option.max_grain_samples = 512;
+    option.custom_rack_option.rack_option.max_voices = 1;
+    option.custom_rack_option.rack_option.max_matrices = 1;
+    option.custom_rack_option.rack_option.max_ports = 1;
+    option.custom_rack_option.num_buffers = 1;
+    option.custom_rack_option.num_modules = 1;
+    option.custom_rack_option.module[0].module_id = SCE_NGS2_CUSTOM_MODULE_ID_FILTER;
+    option.max_channel_works = 1;
+    Ngs2ContextBufferInfo query{};
+    Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_CUSTOM_SAMPLER, &option.custom_rack_option.rack_option, &query) == SCE_NGS2_OK);
+    const auto info = Buffer(query);
+    uintptr_t rack = 0;
+    Require(sceNgs2RackCreate(system, SCE_NGS2_RACK_ID_CUSTOM_SAMPLER, &option.custom_rack_option.rack_option, &info, &rack) == SCE_NGS2_OK);
+    return Voice(rack);
+}
+
+static std::vector<std::int16_t> OraclePcm() {
+    std::vector<std::int16_t> pcm(4096, 0);
+    pcm[ORACLE_IMPULSE_AT] = 16384;
+    return pcm;
+}
+
+static std::vector<float> OracleInput() {
+    std::vector<float> input(ORACLE_FRAMES, 0.0f);
+    input[ORACLE_IMPULSE_AT] = 0.5f;
+    return input;
+}
+
+static std::vector<float> FilteredOutput(const std::vector<std::int16_t>& pcm, const Ngs2SamplerVoiceFilterParam& filter, bool custom, int expected, std::size_t frames) {
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 1);
+    const Ngs2WaveformBlock block{0, pcm.size() * sizeof(std::int16_t), 0, 0, static_cast<std::uint32_t>(pcm.size()), 0, 0};
+    uintptr_t voice = 0;
+    if (custom) {
+        voice = CustomFilterVoice(system);
+        Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}});
+        Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &block});
+        const auto param = CustomFilter(filter);
+        Require(sceNgs2VoiceControl(voice, &param.header) == expected);
+    } else {
+        voice = Sampler(system, pcm, 1, 48000);
+        Require(sceNgs2VoiceControl(voice, &filter.header) == expected);
+    }
+    Patch(voice, master);
+    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
+    const auto out = RenderGrains(system, frames / Grain);
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    return out;
+}
+
+static std::vector<float> OracleOutput(const Ngs2SamplerVoiceFilterParam& filter, bool custom = false, int expected = SCE_NGS2_OK, std::size_t frames = ORACLE_FRAMES) {
+    const auto pcm = OraclePcm();
+    return FilteredOutput(pcm, filter, custom, expected, frames);
+}
+
+static std::uint64_t Hash(const std::vector<float>& out) {
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const float sample : out) {
+        const auto bits = std::bit_cast<std::uint32_t>(sample);
+        for (int k = 0; k < 4; k++) {
+            hash ^= (bits >> (8 * k)) & 0xff;
+            hash *= 1099511628211ull;
+        }
+    }
+    return hash;
+}
+
+static bool AllNan(const std::vector<float>& out) {
+    return std::all_of(out.begin(), out.end(), [](float sample) { return std::isnan(sample); });
+}
+
+struct OracleCase {
+    std::uint32_t type;
+    float frequency;
+    float q;
+    float level;
+    std::uint64_t hash;
+};
+
+static void TestEveryTypeMatchesPs5Output() {
+    const OracleCase cases[] = {
+        {1, 1000.0f, Q, 1.0f, 0x0095ebf1d025e56aull},  {1, 10000.0f, 5.0f, 1.0f, 0xa6f6a10cbf05a25eull}, {2, 1000.0f, Q, 1.0f, 0x807d3bf7d9b26fbeull},
+        {2, 10000.0f, 5.0f, 1.0f, 0xd59046d880fa7f6cull}, {3, 1000.0f, Q, 1.0f, 0x7d892e6cc02df0efull},  {3, 10000.0f, 5.0f, 1.0f, 0xdad2fa19337c925bull},
+        {4, 1000.0f, Q, 1.0f, 0xa4865a5dcffaab81ull},  {4, 10000.0f, 5.0f, 1.0f, 0x1d3bf7f32ccd1d18ull}, {5, 1000.0f, Q, 1.0f, 0xd867a3747a0167fbull},
+        {5, 10000.0f, 5.0f, 1.0f, 0xf163b55969a36c16ull}, {6, 1000.0f, Q, 2.0f, 0x4196c4bd1997975cull},  {6, 10000.0f, 5.0f, 0.25f, 0x94486a940e6bd407ull},
+        {6, 20000.0f, 0.5f, 4.0f, 0xa465d0867e25cb4full}, {7, 1000.0f, Q, 2.0f, 0x28c13aeaac03d0dbull},  {7, 10000.0f, 5.0f, 0.25f, 0xf3e42b57382d5b98ull},
+        {7, 20000.0f, 0.5f, 4.0f, 0xc974f6d9ea02386aull}, {8, 1000.0f, Q, 2.0f, 0x517f0b4c4e7c49e5ull},  {8, 10000.0f, 5.0f, 0.25f, 0xf0cf1f7da1e37d31ull},
+        {8, 20000.0f, 0.5f, 4.0f, 0xa81ad720770ae18eull}, {9, 1000.0f, Q, 1.0f, 0xb2ea3fb54cc0ccdfull},  {9, 10000.0f, 5.0f, 1.0f, 0xaf5ca2f664c91ec7ull},
+        {10, 1000.0f, Q, 1.0f, 0xa5c96fe50a199cbdull}, {10, 10000.0f, 5.0f, 1.0f, 0x48b228a62429560aull}, {9, 100.0f, 0.5f, 1.0f, 0xa6257a9e174ba461ull},
+        {9, 20000.0f, 0.5f, 1.0f, 0x888ce86f1b65bd8cull}, {10, 100.0f, 0.5f, 1.0f, 0xf219922d8f04b5a9ull}, {10, 20000.0f, 0.5f, 1.0f, 0x9c536238aaf24e69ull},
+        {8, 10000.0f, 0.5f, 2.0f, 0xa25fa136d6d96c0bull},
+    };
+    for (const auto& c : cases) Require(Hash(OracleOutput(Filter(0, 1, c.type, 0, c.frequency, c.q, c.level))) == c.hash);
+    for (std::uint32_t type : {1u, 2u, 3u, 4u, 5u, 9u, 10u}) {
+        Require(SameBits(OracleOutput(Filter(0, 1, type, 0, 1000.0f, Q, 0.25f)), OracleOutput(Filter(0, 1, type, 0, 1000.0f, Q, 4.0f))));
+    }
+    for (std::uint32_t type : {1u, 7u, 9u}) Require(SameBits(OracleOutput(Filter(0, 0, type, 0, 4000.0f, 2.0f, 2.0f)), OracleOutput(Filter(0, 1, type, 0, 4000.0f, 2.0f, 2.0f))));
+}
+
+static void TestEveryTypeMatchesBlockModelOnNoise() {
+    std::vector<std::int16_t> pcm(4096);
+    std::uint32_t state = 12345;
+    for (auto& sample : pcm) {
+        state = state * 1664525u + 1013904223u;
+        sample = static_cast<std::int16_t>(state >> 16);
+    }
+    std::vector<float> input(ORACLE_FRAMES);
+    for (std::size_t n = 0; n < input.size(); n++) input[n] = pcm[n] / 32768.0f;
+    const std::pair<Ngs2SamplerVoiceFilterParam, Coefficients> cases[] = {
+        {Filter(0, 1, 1, 0, 1000.0f, Q, 1.0f), LOW_PASS_1000},
+        {Filter(0, 1, 2, 0, 1000.0f, Q, 1.0f), Cookbook(0x3f695cfa, 0xbfe95cfa, 0x3f695cfa, 0xbfe85c56, 0x3f54bb3f)},
+        {Filter(0, 1, 3, 0, 1000.0f, Q, 1.0f), Cookbook(0x3d74ba18, 0x00000000, 0xbd74ba18, 0xbfe85c56, 0x3f54bb3f)},
+        {Filter(0, 1, 4, 0, 1000.0f, Q, 1.0f), Cookbook(0x3dad12ff, 0x00000000, 0xbdad12ff, 0xbfe85c56, 0x3f54bb3f)},
+        {Filter(0, 1, 5, 0, 1000.0f, Q, 1.0f), Cookbook(0x3f6a5d9f, 0xbfe85c56, 0x3f6a5d9f, 0xbfe85c56, 0x3f54bb3f)},
+        {Filter(0, 1, 6, 0, 1000.0f, Q, 2.0f), Cookbook(0x3f842ee8, 0xbfeb615b, 0x3f542632, 0xbfec1983, 0x3f5b13ac)},
+        {Filter(0, 1, 7, 0, 1000.0f, Q, 2.0f), Cookbook(0x3ff7e5f9, 0xc064a0b5, 0x3fd424c8, 0xbfe3ee61, 0x3f4d6f6e)},
+        {Filter(0, 1, 8, 0, 1000.0f, Q, 2.0f), Cookbook(0x3f87d7cf, 0xbfee4212, 0x3f50f126, 0xbfee4212, 0x3f60a0c4)},
+        {Filter(0, 1, 9, 0, 1000.0f, Q, 1.0f), Cookbook(0x3d7bf3c4, 0x3d7bf3c4, 0x00000000, 0xbf608188, 0x80000000)},
+        {Filter(0, 1, 10, 0, 1000.0f, Q, 1.0f), Cookbook(0x3f7040c3, 0xbf7040c3, 0x00000000, 0xbf608187, 0x80000000)},
+        {Direct({0.3f, -0.41f, 0.17f, 1.2f, -0.5f}), {0.3f, -0.41f, 0.17f, 1.2f, -0.5f}},
+    };
+    for (const auto& [filter, coefficients] : cases) {
+        for (bool custom : {false, true}) Require(SameBits(FilteredOutput(pcm, filter, custom, SCE_NGS2_OK, ORACLE_FRAMES), BlockModel(input, coefficients)));
+    }
+}
+
+static void TestDirectCoefficientsRunInBlocksOfFour() {
+    const Coefficients sets[] = {
+        {0.3f, -0.41f, 0.17f, 1.2f, -0.5f},
+        {0.7071f, 0.1234567f, -0.3333333f, -0.9f, -0.3f},
+        {1.1f, -1.9f, 0.93f, 1.85f, -0.89f},
+        {0.0123f, 0.0246f, 0.0123f, 1.9f, -0.905f},
+    };
+    for (const auto& set : sets) Require(SameBits(OracleOutput(Direct(set)), BlockModel(OracleInput(), set)));
+    const auto response = OracleOutput(Direct({0.5f, 0.25f, 0.125f, 0.5f, -0.25f}));
+    const float h[] = {0.5f, 0.5f, 0.25f, 0.0f, -0.0625f, -0.03125f, 0.0f, 0.0078125f};
+    for (std::size_t n = 0; n < std::size(h); n++) Require(response[ORACLE_IMPULSE_AT + n] == 0.5f * h[n]);
+    Require(OracleOutput(Direct({30000.0f, 0.0f, 0.0f, 0.0f, 0.0f}))[ORACLE_IMPULSE_AT] == 15000.0f);
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    Require(AllNan(OracleOutput(Direct({0.5f, 0.0f, 0.0f, nan, 0.0f}))));
+    Require(AllNan(OracleOutput(Direct({nan, 0.0f, 0.0f, 0.0f, 0.0f}))));
+    struct Edge {
+        Coefficients set;
+        float out[4];
+        float last;
+        std::size_t nonFinite;
+    };
+    const Edge edges[] = {
+        {{0.5f, 0.0f, 0.0f, 1.5f, 0.0f}, {0.25f, 0.375f, 0.5625f, 0.84375f}, nan, 2324},
+        {{0.5f, 0.0f, 0.0f, 1.0f, 0.0f}, {0.25f, 0.25f, 0.25f, 0.25f}, 0.25f, 0},
+        {{0.5f, 0.0f, 0.0f, 0.0f, -1.0f}, {0.25f, 0.0f, -0.25f, 0.0f}, -0.25f, 0},
+        {{1e30f, 1e30f, 0.0f, 0.0f, 0.0f}, {5e29f, 5e29f, 0.0f, 0.0f}, 0.0f, 0},
+        {{0.5f, 0.0f, 0.0f, 2.0f, -1.0f}, {0.25f, 0.5f, 0.75f, 1.0f}, 636.75f, 0},
+    };
+    for (const auto& edge : edges) {
+        const auto out = OracleOutput(Direct(edge.set));
+        for (std::size_t n = 0; n < 4; n++) Require(out[ORACLE_IMPULSE_AT + n] == edge.out[n]);
+        Require(std::isnan(edge.last) ? std::isnan(out.back()) : out.back() == edge.last);
+        Require(static_cast<std::size_t>(std::count_if(out.begin(), out.end(), [](float sample) { return !std::isfinite(sample); })) == edge.nonFinite);
+        Require(SameBits(out, BlockModel(OracleInput(), edge.set)));
+    }
+}
+
+static void TestDeadCellsOnePoleOnCustomRack() {
+    const auto deadCells = Filter(0, 1, 9, 0, 10000.0f, Q, 1.0f);
+    const auto out = OracleOutput(deadCells, true);
+    Require(Hash(out) == 0xaf5ca2f664c91ec7ull);
+    const float b0 = Bits(0x3ede4c06);
+    const float pole = Bits(0x3e06cfec);
+    Require(b0 == 0.434173763f && pole == 0.131652534f);
+    Require(out[ORACLE_IMPULSE_AT] == 0.5f * b0 && out[ORACLE_IMPULSE_AT + 1] == 0.5f * (b0 + pole * b0));
+    for (std::uint32_t type = 1; type <= 11; type++) {
+        const float level = type >= 6 && type <= 8 ? 2.0f : 1.0f;
+        const auto param = type == 11 ? Direct({0.3f, -0.41f, 0.17f, 1.2f, -0.5f}) : Filter(0, 1, type, 0, 10000.0f, Q, level);
+        Require(SameBits(OracleOutput(param, true), OracleOutput(param)));
+    }
+}
+
+struct ClampCase {
+    std::uint32_t type;
+    std::uint32_t lowLast;
+    std::uint32_t lowFirst;
+    std::uint32_t qHighLast;
+    std::uint32_t qHighFirst;
+};
+
+static void TestEveryTypeClamps() {
+    const ClampCase cases[] = {
+        {1, 0x40999bfe, 0x40999bff, 0x41ffff59, 0x41ffff58}, {2, 0x40999bfe, 0x40999bff, 0x41ffff59, 0x41ffff58}, {3, 0x40999999, 0x4099999a, 0x41ffff59, 0x41ffff58},
+        {4, 0x40999999, 0x4099999a, 0x42000000, 0x41ffffff}, {5, 0x40999bfe, 0x40999bff, 0x41ffff59, 0x41ffff58}, {6, 0x40999d9f, 0x40999da0, 0x41ffff83, 0x41ffff82},
+        {7, 0x40999d9f, 0x40999da0, 0x41ffff83, 0x41ffff82}, {8, 0x40999b5c, 0x40999b5d, 0x41ffff8d, 0x41ffff8c}, {9, 0x40999999, 0x4099999a, 0, 0},
+        {10, 0x40999bb5, 0x40999bb6, 0, 0},
+    };
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (const auto& c : cases) {
+        const float level = c.type >= 6 && c.type <= 8 ? 2.0f : 1.0f;
+        const auto out = [&c, level](float frequency, float q) { return OracleOutput(Filter(0, 1, c.type, 0, frequency, q, level), false, SCE_NGS2_OK, CLAMP_FRAMES); };
+        const auto low = out(0.0f, Q);
+        for (float frequency : {-1.0f, 1.0f, Bits(c.lowLast)}) Require(SameBits(out(frequency, Q), low));
+        Require(!SameBits(out(Bits(c.lowFirst), Q), low));
+        const auto high = out(30000.0f, Q);
+        for (float frequency : {24000.0f, 23952.0f, INFINITY, 1e6f}) Require(SameBits(out(frequency, Q), high));
+        Require(!SameBits(out(Bits(0x46bb1fff), Q), high));
+        Require(AllNan(out(nan, Q)));
+        const auto qLow = out(1000.0f, 0.0f);
+        const auto qHigh = out(1000.0f, 1e6f);
+        if (c.type >= 9) {
+            Require(SameBits(qLow, qHigh) && SameBits(out(1000.0f, 5.0f), qLow));
+            continue;
+        }
+        for (float q : {-1.0f, Bits(0x38d1b717)}) Require(SameBits(out(1000.0f, q), qLow));
+        Require(!SameBits(out(1000.0f, Bits(0x38d1b718)), qLow));
+        for (float q : {INFINITY, Bits(c.qHighLast)}) Require(SameBits(out(1000.0f, q), qHigh));
+        Require(!SameBits(out(1000.0f, Bits(c.qHighFirst)), qHigh));
+        Require(AllNan(out(1000.0f, nan)));
+    }
+    for (std::uint32_t type : {6u, 7u, 8u}) {
+        const auto out = [type](float level) { return OracleOutput(Filter(0, 1, type, 0, 1000.0f, Q, level), false, SCE_NGS2_OK, CLAMP_FRAMES); };
+        const auto clamped = out(1e-4f);
+        for (float level : {0.0f, -0.0f, -1.0f, 1e-6f, nan, Bits(0x38d1b718)}) Require(SameBits(out(level), clamped));
+        Require(!SameBits(out(Bits(0x38d1b719)), clamped));
+        Require(AllNan(OracleOutput(Filter(0, 1, type, 0, 1000.0f, Q, INFINITY))));
+    }
+}
+
+static void TestInvalidTypesLeaveOutputUnfiltered() {
+    std::vector<float> unfiltered(ORACLE_FRAMES, 0.0f);
+    unfiltered[ORACLE_IMPULSE_AT] = 0.5f;
+    for (std::uint32_t type : {12u, 13u, 100u, 0x7fffffffu, 0xffffffffu}) {
+        for (bool custom : {false, true}) Require(SameBits(OracleOutput(Filter(0, 1, type, 0, 1000.0f, Q, 1.0f), custom, SCE_NGS2_ERROR_INVALID_FILTER_TYPE), unfiltered));
+    }
+}
+
+static void TestEveryTypeRestartsWithZeroHistory() {
+    const auto none = [](uintptr_t, uintptr_t) {};
+    for (std::uint32_t type = 1; type <= 11; type++) {
+        const auto filter = type == 11 ? Direct({0.0123f, 0.0246f, 0.0123f, 1.9f, -0.905f}) : Filter(0, 1, type, 0, 1000.0f, Q, 2.0f);
+        const auto fresh = FreshOutput(&filter);
+        Require(!SameBits(fresh, FreshOutput(nullptr)));
+        Require(SameBits(RestartOutput(Grain, 2, none, filter), fresh));
+    }
+}
+
+static void TestUnestablishedBlockLayoutsThrow() {
+    std::vector<std::int16_t> stereo(4 * Grain, 0);
+    stereo[0] = 16384;
+    stereo[1] = 16384;
+    const auto render = [&stereo](const Ngs2SamplerVoiceFilterParam& filter, std::uint32_t grain) {
+        const auto system = CreateSystem();
+        Require(sceNgs2SystemSetGrainSamples(system, grain) == SCE_NGS2_OK);
+        const auto master = Mastering(system, 2);
+        const auto sampler = Sampler(system, stereo, 2, 48000);
+        Patch(sampler, master);
+        SetFilter(sampler, filter);
+        Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+        std::vector<float> out(2 * grain);
+        const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 2};
+        const bool threw = ThrowsRuntimeError([&] { sceNgs2SystemRender(system, &info, 1); });
+        Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+        return threw;
+    };
+    for (std::uint32_t type : {2u, 9u, 11u}) {
+        Require(render(Filter(0, 1, type, 1, 1000.0f, Q, 1.0f), Grain));
+        Require(render(Filter(0, 1, type, 2, 1000.0f, Q, 1.0f), Grain));
+        for (std::uint64_t mask : {0ull, 3ull, 0xffull}) Require(!render(Filter(0, 1, type, mask, 1000.0f, Q, 1.0f), Grain));
+    }
+    Require(!render(Filter(0, 1, 1, 1, 1000.0f, Q, 1.0f), Grain));
+    Require(render(Filter(0, 1, 1, 0, 1000.0f, Q, 1.0f), 6));
+    Require(!render(Filter(0, 1, 0, 0, 1000.0f, Q, 1.0f), 6));
+    Require(!render(Filter(0, 1, 1, 0, 1000.0f, Q, 1.0f), 12));
 }
 
 int main() {
@@ -543,5 +912,14 @@ int main() {
     TestRestartClearsFilterHistory();
     TestStopAndPlayWithoutNewBlocksClearsHistory();
     TestResentFilterKeepsHistory();
+
+    TestEveryTypeMatchesPs5Output();
+    TestEveryTypeMatchesBlockModelOnNoise();
+    TestDirectCoefficientsRunInBlocksOfFour();
+    TestDeadCellsOnePoleOnCustomRack();
+    TestEveryTypeClamps();
+    TestInvalidTypesLeaveOutputUnfiltered();
+    TestEveryTypeRestartsWithZeroHistory();
+    TestUnestablishedBlockLayoutsThrow();
     return 0;
 }

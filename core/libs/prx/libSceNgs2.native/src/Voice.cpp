@@ -1,9 +1,10 @@
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
-#include <numbers>
 #include <stdexcept>
 #include <string>
 
@@ -264,6 +265,55 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
     }
 }
 
+static std::array<float, 5> FilterCoefficients(const Ngs2SamplerVoiceFilterParam& param, float rate) {
+    if (param.type == 11) return {param.frequency, param.q, param.level, std::bit_cast<float>(param.reserved[0]), std::bit_cast<float>(param.reserved[1])};
+    const float fc = std::clamp(param.frequency, 0.0001f * rate, 0.499f * rate);
+    const float w = (fc / rate) * 6.28318548f;
+    const float s = std::sin(w);
+    const float c = std::cos(w);
+    if (param.type == 9) {
+        const float inv = 1.0f / (1.0f + (c + s));
+        const float g = s * inv;
+        return {g, g, 0.0f, (1.0f + (c - s)) * inv, 0.0f};
+    }
+    if (param.type == 10) {
+        const float inv = 1.0f / ((1.0f + c) + s);
+        const float g = (1.0f + c) * inv;
+        return {g, -g, 0.0f, ((1.0f + c) - s) * inv, 0.0f};
+    }
+    const float q = std::clamp(param.q, 0.0001f, 32.0f);
+    const float alpha = s / (2.0f * q);
+    const float level = param.level > 0.0001f ? param.level : 0.0001f;
+    const float A = std::sqrt(level);
+    const float t = (std::sqrt(A) / q) * s;
+    const float pPlus = (A + 1.0f) + (A - 1.0f) * c;
+    const float pMinus = (A + 1.0f) - (A - 1.0f) * c;
+    const float mPlus = (A - 1.0f) + (A + 1.0f) * c;
+    const float mMinus = (A - 1.0f) - (A + 1.0f) * c;
+    float b0 = 0.0f, b1 = 0.0f, b2 = 0.0f, a0 = 1.0f + alpha, a1 = -2.0f * c, a2 = 1.0f - alpha;
+    switch (param.type) {
+        case 1: b1 = 1.0f - c; b0 = b1 * 0.5f; b2 = b0; break;
+        case 2: b1 = -(1.0f + c); b0 = (1.0f + c) * 0.5f; b2 = b0; break;
+        case 3: b0 = s * 0.5f; b2 = -b0; break;
+        case 4: b0 = alpha; b2 = -alpha; break;
+        case 5: b0 = 1.0f; b1 = -2.0f * c; b2 = 1.0f; break;
+        case 6:
+            b0 = A * (pMinus + t); b1 = 2.0f * A * mMinus; b2 = A * (pMinus - t);
+            a0 = pPlus + t; a1 = -2.0f * mPlus; a2 = pPlus - t;
+            break;
+        case 7:
+            b0 = A * (pPlus + t); b1 = -2.0f * A * mPlus; b2 = A * (pPlus - t);
+            a0 = pMinus + t; a1 = 2.0f * mMinus; a2 = pMinus - t;
+            break;
+        default:
+            b0 = 1.0f + alpha * A; b1 = -2.0f * c; b2 = 1.0f - alpha * A;
+            a0 = 1.0f + alpha / A; a2 = 1.0f - alpha / A;
+            break;
+    }
+    const float inv = 1.0f / a0;
+    return {b0 * inv, b1 * inv, b2 * inv, -(a1 * inv), -(a2 * inv)};
+}
+
 void Ngs2SetFilter(Ngs2Voice& voice, const Ngs2SamplerVoiceFilterParam& param) {
     if (param.header.size < sizeof(Ngs2SamplerVoiceFilterParam)) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE};
     const bool badIndex = param.index >= voice.rack->maxFilters;
@@ -276,29 +326,41 @@ void Ngs2SetFilter(Ngs2Voice& voice, const Ngs2SamplerVoiceFilterParam& param) {
     if (badIndex) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_PARAM_ID};
     if (badLocation) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_MODULE_LOCATION};
     if (badType) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_FILTER_TYPE};
-    if (param.type > 1) throw std::runtime_error("NGS2: sampler filter type " + std::to_string(param.type) + " is not implemented");
     if (voice.filters.size() <= param.index) voice.filters.resize(param.index + 1);
     auto& filter = voice.filters[param.index];
     if (param.type == 0) {
         filter = {};
         return;
     }
-    const auto rate = static_cast<float>(voice.rack->system->option.sample_rate);
-    const float frequency = std::clamp(param.frequency, rate * 0.0001f, rate * 0.499f);
-    const float q = std::clamp(param.q, 0.0001f, 32.0f);
+    const auto [i0, i1, i2, o1, o2] = FilterCoefficients(param, static_cast<float>(voice.rack->system->option.sample_rate));
     filter.enabled = true;
+    filter.type = param.type;
     filter.location = param.location;
     filter.bypassMask = param.channel_mask;
     filter.history.resize(voice.channels);
-    const float omega = 2.0f * std::numbers::pi_v<float> * frequency / rate;
-    const float cosine = std::cos(omega);
-    const float alpha = std::sin(omega) / (2.0f * q);
-    const float a0 = 1.0f + alpha;
-    filter.b0 = (1.0f - cosine) * 0.5f / a0;
-    filter.b1 = 2.0f * filter.b0;
-    filter.b2 = filter.b0;
-    filter.a1 = -2.0f * cosine / a0;
-    filter.a2 = (1.0f - alpha) / a0;
+    auto& h = filter.h;
+    auto& c = filter.c;
+    auto& d = filter.d;
+    auto& e1 = filter.e1;
+    auto& e2 = filter.e2;
+    h[0] = i0;
+    h[1] = i1 + o1 * h[0];
+    h[2] = (i2 + o2 * h[0]) + o1 * h[1];
+    h[3] = o2 * h[1] + o1 * h[2];
+    c[0] = o1;
+    c[1] = o2 + o1 * c[0];
+    d[0] = o2;
+    d[1] = o1 * d[0];
+    e1[0] = i1;
+    e1[1] = i2 + o1 * e1[0];
+    e2[0] = i2;
+    e2[1] = o1 * e2[0];
+    for (int j = 2; j < 4; j++) {
+        c[j] = o2 * c[j - 2] + o1 * c[j - 1];
+        d[j] = o2 * d[j - 2] + o1 * d[j - 1];
+        e1[j] = o2 * e1[j - 2] + o1 * e1[j - 1];
+        e2[j] = o2 * e2[j - 2] + o1 * e2[j - 1];
+    }
 }
 
 static void ApplySamplerParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
