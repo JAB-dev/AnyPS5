@@ -660,6 +660,8 @@ static void TestEmptyAddsCloseLikePcm() {
     Require(AddNoBlocks(voice, 0) == SCE_NGS2_OK && AddNoBlocks(voice, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND) == full);
     Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_ATRAC9, 1, 48000, Config, 0, 0}});
     Require(AddNoBlocks(voice, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND) == SCE_NGS2_OK && AddNoBlocks(voice, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND) == full);
+    const auto queued = EmptySampler(system);
+    for (int i = 0; i < 5; i++) Queue(queued, Superframe, SuperframeBytes, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE, SuperframeSamples);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 

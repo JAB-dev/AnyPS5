@@ -359,6 +359,8 @@ static void TestIgnoredFlagsAndOnlyData() {
         Require(Silent(RenderI16(system)) && Silent(RenderI16(system)));
         if ((flags & 1) == 0) Require(Add(voice, ramp, 1, 0) == full);
         else Require(Throws([&] { Add(voice, ramp, 1, 0); }));
+        Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}});
+        Require(Add(voice, ramp, 1, 0) == SCE_NGS2_OK);
         finish(voice);
     }
 
@@ -520,6 +522,18 @@ static void TestBlockQueue() {
     const Ngs2WaveformBlock looping{0, Grain * 2, 1, 0, Grain, 0, 0};
     const Ngs2SamplerVoiceWaveformBlocksParam loop{{sizeof(Ngs2SamplerVoiceWaveformBlocksParam), 0, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS}, Blocks.data(), continued, 1, &looping};
     Require(Throws([&] { sceNgs2VoiceControl(chain.voice, &loop.header); }));
+    Require(AddBlocks(chain.voice, 0, 0, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET | continued) == SCE_NGS2_OK);
+    Require(AddBlocks(chain.voice, 0, 3, continued) == SCE_NGS2_OK && sceNgs2VoiceControl(chain.voice, &loop.header) == SCE_NGS2_OK);
+    Require(Throws([&] { AddBlocks(chain.voice, 5, 1, continued); }));
+    Require(sceNgs2SystemDestroy(chain.system, nullptr) == SCE_NGS2_OK);
+
+    chain = QueueVoice(1);
+    const Ngs2WaveformBlock streamStart{0, Grain * 2, 0, 0, Grain * 4, 0, 0};
+    const Ngs2SamplerVoiceWaveformBlocksParam stream{{sizeof(Ngs2SamplerVoiceWaveformBlocksParam), 0, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS}, Blocks.data(), continued, 1, &streamStart};
+    Require(sceNgs2VoiceControl(chain.voice, &stream.header) == SCE_NGS2_OK);
+    Require(AddBlocks(chain.voice, 1, 1, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND | continued) == SCE_NGS2_OK);
+    Event(chain.voice, SCE_NGS2_VOICE_EVENT_PLAY);
+    Require(RenderI16(chain.system)[0] == BlockValue(0) && RenderI16(chain.system)[0] == BlockValue(1));
     Require(sceNgs2SystemDestroy(chain.system, nullptr) == SCE_NGS2_OK);
 
     const auto system = CreateSystem();

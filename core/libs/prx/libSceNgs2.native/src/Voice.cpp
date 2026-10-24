@@ -219,8 +219,7 @@ static void AppendStreamData(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlo
 
 static void CheckQueueRoom(const Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksParam& param, bool reset) {
     if (voice.rack->rackId != SCE_NGS2_RACK_ID_SAMPLER || voice.waveformType != SCE_NGS2_WAVEFORM_TYPE_PCM_I16L) return;
-    const std::size_t queued = reset ? 0 : voice.blocks.size();
-    if (queued + param.num_blocks <= voice.rack->maxWaveformBlocks) return;
+    if (voice.blocks.size() + param.num_blocks <= voice.rack->maxWaveformBlocks) return;
     const bool repeatsOrStreams = std::any_of(voice.blocks.begin(), voice.blocks.end(), [](const Ngs2Block& block) { return block.streaming || block.info.num_repeats != 0; }) ||
                                   std::any_of(param.blocks, param.blocks + param.num_blocks, [](const Ngs2WaveformBlock& block) { return block.num_repeats != 0; });
     if (reset || repeatsOrStreams) throw std::runtime_error("NGS2: a full waveform block queue with a reset, a repeating or a streaming block is not implemented");
@@ -228,10 +227,9 @@ static void CheckQueueRoom(const Ngs2Voice& voice, const Ngs2SamplerVoiceWavefor
 }
 
 static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksParam& param) {
-    const std::uint32_t flags = param.flags & (SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_SILENCE);
     if (param.num_blocks != 0 && (param.blocks == nullptr || param.data == nullptr)) APS5_INVALID_ARG_EX;
-    const bool reset = (flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET) != 0;
-    const bool append = (flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND) != 0;
+    const bool reset = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET) != 0;
+    const bool append = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND) != 0;
     if (!voice.acceptsBlocks && !reset) throw Ngs2ReturnCode{SCE_NGS2_ERROR_FULL_WAVEFORM_BLOCKS};
     if (param.num_blocks != 0 && voice.channels == 0) APS5_INVALID_ARG_EX;
     if (voice.onlyData) throw std::runtime_error("NGS2: a waveform add after an ONLY_DATA block is not implemented");
@@ -249,11 +247,11 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
     if (append) {
         if (onlyData) voice.onlyData = true;
         else if (param.num_blocks != 0) AppendStreamData(voice, param, frameBytes);
-        voice.acceptsBlocks = (flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE) != 0;
+        voice.acceptsBlocks = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE) != 0;
         return;
     }
-    voice.acceptsBlocks = (flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE) != 0;
-    const bool allowsSilence = (flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_SILENCE) != 0;
+    voice.acceptsBlocks = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE) != 0;
+    const bool allowsSilence = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_SILENCE) != 0;
     for (std::uint32_t i = 0; i < param.num_blocks; i++) {
         const auto& block = param.blocks[i];
         if (block.num_samples == 0 && block.data_size == 0) continue;
