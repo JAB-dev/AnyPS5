@@ -1351,41 +1351,140 @@ static void TestDefaultChannelMap() {
     Require(MixFrame(2, 0, 1) == std::vector<float>{half} && MixFrame(2, 1, 1) == std::vector<float>{half});
     Require(MixFrame(2, 1, 2) == (std::vector<float>{0, 0.5f}));
     Require(MixFrame(2, 1, 6) == (std::vector<float>{0, 0.5f, 0, 0, 0, 0}));
-    Require(MixFrame(3, 2, 2) == (std::vector<float>{0, 0}));
-    Require(MixFrame(3, 2, 6) == (std::vector<float>{0, 0, 0, 0.5f, 0, 0}));
+    Require(MixFrame(3, 2, 2) == (std::vector<float>{half, half}));
+    Require(MixFrame(3, 2, 6) == (std::vector<float>{0, 0, 0.5f, 0, 0, 0}));
     Require(MixFrame(4, 2, 1) == std::vector<float>{0.25f});
     Require(MixFrame(4, 2, 2) == (std::vector<float>{half, 0}));
     Require(MixFrame(4, 3, 6) == (std::vector<float>{0, 0, 0, 0, 0, 0.5f}));
     Require(MixFrame(5, 2, 2) == (std::vector<float>{half, half}));
     Require(MixFrame(5, 3, 1) == std::vector<float>{0.25f});
-    Require(MixFrame(5, 3, 2) == (std::vector<float>{0, 0}));
+    Require(MixFrame(5, 3, 2) == (std::vector<float>{half, 0}));
     Require(MixFrame(6, 3, 1) == std::vector<float>{0});
     Require(MixFrame(6, 4, 2) == (std::vector<float>{half, 0}));
     Require(MixFrame(6, 5, 8) == (std::vector<float>{0, 0, 0, 0, 0, 0.5f, 0, 0}));
     Require(MixFrame(7, 6, 1) == std::vector<float>{quarter});
-    Require(MixFrame(7, 6, 2) == (std::vector<float>{quarter, quarter}));
+    Require(MixFrame(7, 6, 2) == (std::vector<float>{0.25f, 0.25f}));
     Require(MixFrame(7, 6, 6) == (std::vector<float>{0, 0, 0, 0, half, half}));
     Require(MixFrame(7, 6, 8) == (std::vector<float>{0, 0, 0, 0, 0, 0, half, half}));
     Require(MixFrame(8, 6, 2) == (std::vector<float>{half, 0}));
     Require(MixFrame(8, 7, 6) == (std::vector<float>{0, 0, 0, 0, 0, 0.5f}));
     Require(MixFrame(8, 7, 8) == (std::vector<float>{0, 0, 0, 0, 0, 0, 0, 0.5f}));
+}
 
+static std::vector<float> PortMapGains(std::uint32_t sourceChannels, std::uint32_t destChannels) {
+    const auto firstBuffer = usedBuffers;
     const auto system = CreateSystem();
-    const auto master = Mastering(system, 2);
+    const auto master = Mastering(system, 8);
     const auto submixer = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SUBMIXER));
-    Control(submixer, SCE_NGS2_SUBMIXER_VOICE_PARAM_SETUP, Ngs2SubmixerVoiceSetupParam{{}, 4, 0});
+    Control(submixer, SCE_NGS2_SUBMIXER_VOICE_PARAM_SETUP, Ngs2SubmixerVoiceSetupParam{{}, destChannels, 0});
+    std::vector<float> identity(8 * destChannels, 0.0f);
+    for (std::uint32_t channel = 0; channel < destChannels; channel++) identity[channel * destChannels + channel] = 1.0f;
+    Control(submixer, SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS, Ngs2VoiceMatrixLevelsParam{{}, 0, static_cast<std::uint32_t>(identity.size()), identity.data()});
+    Control(submixer, SCE_NGS2_VOICE_PARAM_PORT_MATRIX, Ngs2VoicePortMatrixParam{{}, 0, 0});
     Patch(submixer, master);
     Event(submixer, SCE_NGS2_VOICE_EVENT_PLAY);
-    const std::vector<std::int16_t> pcm(Grain, 16384);
-    const auto sampler = Sampler(system, pcm, 0);
+    const auto sampler = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, sourceChannels, 48000, 0, 0, 0}});
+    static std::vector<std::int16_t> frames;
+    frames.assign(Grain * sourceChannels, 0);
+    for (std::uint32_t channel = 0; channel < sourceChannels; channel++) frames[channel * sourceChannels + channel] = 16384;
+    const Ngs2WaveformBlock block{0, frames.size() * sizeof(std::int16_t), 0, 0, Grain, 0, 0};
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, frames.data(), 0, 1, &block});
     Patch(sampler, submixer);
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
-    std::vector<float> out(Grain * 2, -1.0f);
-    const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 2};
-    bool unsupported = false;
-    try { sceNgs2SystemRender(system, &info, 1); } catch (const std::runtime_error&) { unsupported = true; }
-    Require(unsupported);
+    std::vector<float> out(Grain * 8, -1.0f);
+    const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 8};
+    Require(sceNgs2SystemRender(system, &info, 1) == SCE_NGS2_OK);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    usedBuffers = firstBuffer;
+    for (std::uint32_t frame = sourceChannels; frame < Grain; frame++) {
+        for (std::uint32_t channel = 0; channel < 8; channel++) Require(out[frame * 8 + channel] == 0.0f);
+    }
+    std::vector<float> gains(8 * sourceChannels);
+    for (std::uint32_t dest = 0; dest < 8; dest++) {
+        for (std::uint32_t source = 0; source < sourceChannels; source++) gains[dest * sourceChannels + source] = out[source * 8 + dest] * 2.0f;
+    }
+    return gains;
+}
+
+struct MeasuredPortMap {
+    std::uint32_t sourceChannels;
+    std::vector<std::uint32_t> destChannels;
+    const char* rows;
+};
+
+static std::vector<float> MeasuredGains(std::uint32_t sourceChannels, const char* rows) {
+    std::vector<float> gains(8 * sourceChannels, 0.0f);
+    for (const char* text = rows; *text != '\0';) {
+        const std::uint32_t dest = static_cast<std::uint32_t>(text[0] - '0');
+        const std::uint32_t source = static_cast<std::uint32_t>(text[2] - '0');
+        Require(text[1] == '<' && dest < 8 && source < sourceChannels);
+        text += 3;
+        float gain = 1.0f;
+        if (*text == '*') {
+            gain = text[1] == 'h' ? 0.707106769f : text[1] == 'q' ? 0.353553385f : 0.5f;
+            text += 2;
+        }
+        gains[dest * sourceChannels + source] = gain;
+        while (*text == ' ') text++;
+    }
+    return gains;
+}
+
+static void TestOddChannelPortMaps() {
+    const MeasuredPortMap maps[] = {
+        {3, {1}, "0<0*h 0<1*h 0<2"},
+        {3, {2, 3, 4}, "0<0 0<2*h 1<1 1<2*h"},
+        {3, {5, 6, 7, 8}, "0<0 1<1 2<2"},
+        {4, {1}, "0<0*h 0<1*h 0<2*5 0<3*5"},
+        {4, {2}, "0<0 0<2*h 1<1 1<3*h"},
+        {4, {3}, "0<0 1<1 2<2"},
+        {4, {4}, "0<0 1<1 2<2 3<3"},
+        {4, {5}, "0<0 1<1 4<2"},
+        {4, {6, 7, 8}, "0<0 1<1 4<2 5<3"},
+        {5, {1}, "0<0*h 0<1*h 0<2 0<3*5 0<4*5"},
+        {5, {2}, "0<0 0<2*h 0<3*h 1<1 1<2*h 1<4*h"},
+        {5, {3}, "0<0 0<2*h 1<1 1<2*h 2<3"},
+        {5, {4}, "0<0 0<2*h 1<1 1<2*h 2<3 3<4"},
+        {5, {5}, "0<0 1<1 2<2 4<3"},
+        {5, {6, 7, 8}, "0<0 1<1 2<2 4<3 5<4"},
+        {7, {1}, "0<0*h 0<1*h 0<2 0<4*5 0<5*5 0<6*q"},
+        {7, {2}, "0<0 0<2*h 0<4*h 0<6*5 1<1 1<2*h 1<5*h 1<6*5"},
+        {7, {3}, "0<0 0<2*h 1<1 1<2*h 2<4 2<6*h"},
+        {7, {4}, "0<0 0<2*h 1<1 1<2*h 2<4 2<6*h 3<5 3<6*h"},
+        {7, {5}, "0<0 1<1 2<2 3<3 4<4 4<6*h"},
+        {7, {6}, "0<0 1<1 2<2 3<3 4<4 4<6*h 5<5 5<6*h"},
+        {7, {7}, "0<0 1<1 2<2 3<3 4<4 5<5 6<6*h"},
+        {7, {8}, "0<0 1<1 2<2 3<3 4<4 5<5 6<6*h 7<6*h"},
+        {1, {3, 4}, "0<0*h 1<0*h"},
+        {1, {5, 7}, "2<0"},
+        {2, {3, 4, 5, 7}, "0<0 1<1"},
+        {6, {3}, "0<0 0<2*h 1<1 1<2*h 2<4"},
+        {6, {4}, "0<0 0<2*h 1<1 1<2*h 2<4 3<5"},
+        {6, {5}, "0<0 1<1 2<2 3<3 4<4"},
+        {6, {7}, "0<0 1<1 2<2 3<3 4<4 5<5"},
+        {8, {3}, "0<0 1<1 2<4 2<6"},
+        {8, {4}, "0<0 1<1 2<4 2<6 3<5 3<7"},
+        {8, {5}, "0<0 1<1 2<2 3<3 4<4 4<6"},
+        {8, {7}, "0<0 1<1 2<2 3<3 4<4 5<5 6<6"},
+    };
+    std::uint32_t pairs = 0;
+    for (const auto& map : maps) {
+        for (std::uint32_t destChannels : map.destChannels) {
+            Require(PortMapGains(map.sourceChannels, destChannels) == MeasuredGains(map.sourceChannels, map.rows));
+            pairs++;
+        }
+    }
+    Require(pairs == 48);
+
+    const float half = 0.5f * 0.707106769f;
+    Require(MixFrame(3, 2, 3) == (std::vector<float>{half, half, 0}));
+    Require(MixFrame(4, 3, 4) == (std::vector<float>{0, 0, 0, 0.5f}));
+    Require(MixFrame(5, 3, 5) == (std::vector<float>{0, 0, 0, 0, 0}));
+    Require(MixFrame(6, 3, 5) == (std::vector<float>{0, 0, 0, 0, 0.5f}));
+    Require(MixFrame(8, 4, 3) == (std::vector<float>{half, half, 0}));
+    Require(MixFrame(7, 6, 7) == (std::vector<float>{0, 0, 0, 0, 0, 0, 0.5f * 0.49999997f}));
+    Require(MixFrame(1, 0, 7) == (std::vector<float>{0, 0, 0.5f, 0, 0, 0, 0}));
 }
 
 static void TestUnsetMatrix() {
@@ -1668,6 +1767,7 @@ int main() {
     TestRackDestroyWaitsForLock();
     TestDestroyDuringOwnRenderThrows();
     TestDefaultChannelMap();
+    TestOddChannelPortMaps();
     TestUnsetMatrix();
     TestRenderCapacity<float>(SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 1);
     TestRenderCapacity<float>(SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 2);
