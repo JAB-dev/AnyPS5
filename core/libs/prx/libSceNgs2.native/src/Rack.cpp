@@ -114,13 +114,16 @@ static int CheckedRackOption(std::uint32_t rackId, const Ngs2RackOption* option,
         }
         throw std::invalid_argument("NGS2: invalid rack voice or channel count");
     }
-    if (rackId == SCE_NGS2_RACK_ID_SAMPLER && (options.sampler.max_waveform_blocks == 0 || options.sampler.max_waveform_blocks > MAX_WAVEFORM_BLOCKS)) {
-        return SCE_NGS2_ERROR_INVALID_NUM_WAVEFORM_BLOCKS;
-    }
     if (rackId == SCE_NGS2_RACK_ID_REVERB && options.reverb.reverb_size != 1) {
         throw std::runtime_error("NGS2: reverb rack size " + std::to_string(options.reverb.reverb_size) + " is not implemented");
     }
     return SCE_NGS2_OK;
+}
+
+static int CheckedWaveformBlocks(std::uint32_t rackId, const RackOptions& options) {
+    if (rackId != SCE_NGS2_RACK_ID_SAMPLER) return SCE_NGS2_OK;
+    const auto blocks = options.sampler.max_waveform_blocks;
+    return blocks == 0 || blocks > MAX_WAVEFORM_BLOCKS ? SCE_NGS2_ERROR_INVALID_NUM_WAVEFORM_BLOCKS : SCE_NGS2_OK;
 }
 
 static int CreateRack(Ngs2Handle systemHandle, std::uint32_t rackId, const RackOptions& options, const Ngs2ContextBufferInfo& bufferInfo,
@@ -196,7 +199,8 @@ int APS5_VABI sceNgs2RackCreate(uintptr_t system_handle, uint32_t rack_id, const
     if (handle == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
     if (buffer_info == nullptr) APS5_INVALID_ARG_EX;
     RackOptions options{};
-    const int result = CheckedRackOption(rack_id, option, options);
+    int result = CheckedRackOption(rack_id, option, options);
+    if (result == SCE_NGS2_OK) result = CheckedWaveformBlocks(rack_id, options);
     if (result != SCE_NGS2_OK) return result;
     const Ngs2Lock lock;
     return CreateRack(system_handle, rack_id, options, *buffer_info, {}, handle);
@@ -206,7 +210,8 @@ int APS5_VABI sceNgs2RackCreateWithAllocator(uintptr_t system_handle, uint32_t r
     if (handle == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
     if (allocator == nullptr || allocator->alloc_handler == nullptr || allocator->free_handler == nullptr) APS5_INVALID_ARG_EX;
     RackOptions options{};
-    const int checked = CheckedRackOption(rack_id, option, options);
+    int checked = CheckedRackOption(rack_id, option, options);
+    if (checked == SCE_NGS2_OK) checked = CheckedWaveformBlocks(rack_id, options);
     if (checked != SCE_NGS2_OK) return checked;
     const Ngs2Lock lock;
     if (Ngs2FindSystem(system_handle) == nullptr) return SCE_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
