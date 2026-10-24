@@ -17,7 +17,6 @@ static constexpr std::uint32_t COMMAND_PORT_MATRIX = 7;
 static constexpr std::uint8_t COMMAND_TYPE_FLOAT = 1;
 static constexpr std::uint8_t COMMAND_TYPE_INT = 3;
 static constexpr std::uint8_t COMMAND_TYPE_UINT = 4;
-static constexpr std::int32_t FIRST_TEMPLATE_MATRIX = 16;
 static constexpr std::int32_t MAX_PORT_MATRIX_ID = 19;
 
 struct Ngs2ReturnCode {
@@ -102,34 +101,26 @@ static Ngs2Port& PortAt(Ngs2Voice& voice, std::uint32_t port) {
 }
 
 static void SetMatrixLevels(Ngs2Voice& voice, std::uint32_t matrixId, const float* levels, std::uint32_t numLevels) {
-    const bool badIndex = matrixId >= voice.matrices.size();
-    const bool tooMany = numLevels > voice.rack->maxMatrixLevels;
-    const bool noLevels = levels == nullptr;
-    if (numLevels == 0 && voice.channels == 0 && !badIndex) {
-        voice.matrices[matrixId].reset();
-        return;
+    const auto rackId = voice.rack->rackId;
+    if (levels == nullptr && rackId != SCE_NGS2_RACK_ID_SAMPLER) {
+        throw std::runtime_error("NGS2: a NULL matrix level pointer is not implemented for rack " + Ngs2Hex(rackId));
     }
-    if ((numLevels == 0 && (badIndex || noLevels)) || badIndex + tooMany + noLevels > 1) {
-        throw std::runtime_error("NGS2: this combination of matrix level arguments is not implemented");
-    }
-    if (voice.rack->rackId != SCE_NGS2_RACK_ID_SAMPLER && (badIndex || tooMany || noLevels || numLevels == 0)) {
-        throw std::runtime_error("NGS2: matrix levels " + std::to_string(matrixId) + " with " + std::to_string(numLevels) + " levels are not implemented for rack " + Ngs2Hex(voice.rack->rackId));
-    }
-    if (badIndex) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_MATRIX_INDEX};
-    if (tooMany) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_NUM_MATRIX_VOLUMES};
+    if (matrixId >= voice.matrices.size()) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_MATRIX_INDEX};
+    if (levels == nullptr) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_PARAM_ADDRESS};
+    if (numLevels > voice.rack->maxMatrixLevels) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_NUM_MATRIX_VOLUMES};
     if (numLevels > SCE_NGS2_MAX_MATRIX_LEVELS) throw std::runtime_error("NGS2: more than 1369 matrix levels are not implemented");
-    if (noLevels) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_PARAM_ADDRESS};
     voice.matrices[matrixId].emplace(levels, levels + numLevels);
 }
 
 static void SetPortMatrix(Ngs2Voice& voice, std::uint32_t port, std::int32_t matrixId) {
-    const bool sampler = voice.rack->rackId == SCE_NGS2_RACK_ID_SAMPLER;
-    const auto matrices = static_cast<std::int32_t>(voice.matrices.size());
-    const bool own = matrixId >= -1 && matrixId < (sampler ? std::min(matrices, FIRST_TEMPLATE_MATRIX) : matrices);
-    if (!own && !sampler) {
-        throw std::runtime_error("NGS2: port matrix " + std::to_string(matrixId) + " past the voice's matrices is not implemented for rack " + Ngs2Hex(voice.rack->rackId));
+    const auto rackId = voice.rack->rackId;
+    if (rackId == SCE_NGS2_RACK_ID_MASTERING) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_OUTPUT_INDEX};
+    const bool own = matrixId >= -1 && matrixId < static_cast<std::int32_t>(voice.matrices.size());
+    if (rackId == SCE_NGS2_RACK_ID_CUSTOM_SAMPLER && !own) {
+        throw std::runtime_error("NGS2: port matrix " + std::to_string(matrixId) + " past the voice's matrices is not implemented for rack " + Ngs2Hex(rackId));
     }
-    if (matrixId < -1 || matrixId > MAX_PORT_MATRIX_ID) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_MATRIX_INDEX};
+    const bool keepsOwn = own && rackId != SCE_NGS2_RACK_ID_SAMPLER;
+    if (!keepsOwn && (matrixId < -1 || matrixId > MAX_PORT_MATRIX_ID)) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_MATRIX_INDEX};
     PortAt(voice, port).matrix = matrixId;
 }
 

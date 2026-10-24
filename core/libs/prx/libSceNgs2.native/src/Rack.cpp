@@ -11,6 +11,8 @@
 #include "prx/libc/include/General.hpp"
 #include "Ngs2Internal.hpp"
 
+static constexpr std::uint32_t MAX_SAMPLER_RACK_CHANNELS = 37;
+
 union RackOptions {
     Ngs2RackOption common;
     Ngs2SamplerRackOption sampler;
@@ -112,7 +114,15 @@ static int CheckedRackOption(std::uint32_t rackId, const Ngs2RackOption* option,
         }
         throw std::invalid_argument("NGS2: invalid rack voice or channel count");
     }
-    if (rackId == SCE_NGS2_RACK_ID_SAMPLER && options.common.max_matrices == 0) return SCE_NGS2_ERROR_INVALID_NUM_MATRICES;
+    const bool tooManySamplerChannels = rackId == SCE_NGS2_RACK_ID_SAMPLER &&
+                                        std::max(options.common.max_voice_channels, options.common.max_output_channels) > MAX_SAMPLER_RACK_CHANNELS;
+    if (rackId == SCE_NGS2_RACK_ID_SAMPLER && options.common.max_matrices == 0) {
+        if (tooManySamplerChannels) throw std::runtime_error("NGS2: a sampler rack with no matrices and more than 37 channels is not implemented");
+        return SCE_NGS2_ERROR_INVALID_NUM_MATRICES;
+    }
+    if (tooManySamplerChannels) return SCE_NGS2_ERROR_INVALID_NUM_CHANNELS;
+    if (rackId == SCE_NGS2_RACK_ID_MASTERING && options.common.max_ports != 0) return SCE_NGS2_ERROR_INVALID_NUM_OUTPUTS;
+    if (rackId == SCE_NGS2_RACK_ID_MASTERING && options.common.max_matrices != 0) return SCE_NGS2_ERROR_INVALID_NUM_MATRICES;
     if (rackId == SCE_NGS2_RACK_ID_REVERB && options.reverb.reverb_size != 1) {
         throw std::runtime_error("NGS2: reverb rack size " + std::to_string(options.reverb.reverb_size) + " is not implemented");
     }
@@ -132,8 +142,7 @@ static int CreateRack(Ngs2Handle systemHandle, std::uint32_t rackId, const RackO
                       : rackId == SCE_NGS2_RACK_ID_CUSTOM_SAMPLER ? options.customSampler.custom_rack_option.num_modules
                       : rackId == SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER ? options.customSubmixer.custom_rack_option.num_modules : 0;
     const auto rackChannels = [](std::uint32_t value) { return std::uint64_t{value == 0 ? NGS2_MAX_CHANNELS : value}; };
-    rack->maxMatrixLevels = rackId != SCE_NGS2_RACK_ID_SAMPLER ? NGS2_MAX_CHANNELS * NGS2_MAX_CHANNELS
-                          : rackChannels(options.common.max_voice_channels) * rackChannels(options.common.max_output_channels);
+    rack->maxMatrixLevels = rackChannels(options.common.max_voice_channels) * rackChannels(options.common.max_output_channels);
     rack->uid = nextUid++;
     std::memcpy(rack->name, options.common.name, sizeof(rack->name));
     rack->name[sizeof(rack->name) - 1] = '\0';

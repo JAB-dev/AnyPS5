@@ -41,6 +41,8 @@ uintptr_t CreateSingleVoiceRack(uintptr_t system, std::uint32_t rackId) {
             option.submixer.max_inputs = 1;
             break;
         case SCE_NGS2_RACK_ID_MASTERING:
+            option.common.max_matrices = 0;
+            option.common.max_ports = 0;
             option.mastering.max_channels = 2;
             break;
         default:

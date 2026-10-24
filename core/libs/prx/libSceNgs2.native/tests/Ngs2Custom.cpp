@@ -114,6 +114,17 @@ static bool ControlThrows(uintptr_t voice, std::uint32_t id, TParam param) {
     return false;
 }
 
+static int SetPortMatrix(uintptr_t voice, std::int32_t matrixId) {
+    const Ngs2VoicePortMatrixParam param{{sizeof(Ngs2VoicePortMatrixParam), 0, SCE_NGS2_VOICE_PARAM_PORT_MATRIX}, 0, matrixId};
+    return sceNgs2VoiceControl(voice, &param.header);
+}
+
+static std::int32_t PortMatrixId(uintptr_t voice) {
+    Ngs2VoicePortInfo info{};
+    Require(sceNgs2VoiceGetPortInfo(voice, 0, &info, sizeof(info)) == SCE_NGS2_OK);
+    return info.matrix_id;
+}
+
 static uintptr_t CustomRack(uintptr_t system, const Ngs2CustomSubmixerRackOption& option) {
     Ngs2ContextBufferInfo query{};
     Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER, &option.custom_rack_option.rack_option, &query) == SCE_NGS2_OK);
@@ -174,6 +185,9 @@ static void TestUserFxChain() {
     Require(ControlThrows<std::runtime_error>(custom, SCE_NGS2_CUSTOM_SUBMIXER_VOICE_PARAM_SETUP, Ngs2CustomSubmixerVoiceSetupParam{{}, 2, 2, 1, 0}));
     Require(ControlThrows<std::invalid_argument>(custom, SCE_NGS2_CUSTOM_SUBMIXER_VOICE_PARAM_SETUP, Ngs2CustomSubmixerVoiceSetupParam{{}, 3, 3, 0, 0}));
     Require(ControlThrows<std::invalid_argument>(sampler, SCE_NGS2_CUSTOM_VOICE_PARAM_USER_FX2 | 0, Ngs2CustomVoiceUserFx2Param{{}, &gain, sizeof(gain)}));
+
+    for (std::int32_t id : {1, 16, 18, 19, 0, -1}) Require(SetPortMatrix(custom, id) == SCE_NGS2_OK && PortMatrixId(custom) == id);
+    for (std::int32_t id : {-2, 20, 100}) Require(SetPortMatrix(custom, id) == static_cast<int>(0x804A8355u) && PortMatrixId(custom) == -1);
 
     calls.processResult = -1;
     bool failed = false;
@@ -282,6 +296,8 @@ static void TestCustomSampler() {
 
     const auto out = Render(system);
     for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == 0.5f && out[i * 2 + 1] == 0.75f);
+    for (std::int32_t id : {1, 16, 19, -2}) Require(ControlThrows<std::runtime_error>(voice, SCE_NGS2_VOICE_PARAM_PORT_MATRIX, Ngs2VoicePortMatrixParam{{}, 0, id}));
+    Require(SetPortMatrix(voice, 0) == SCE_NGS2_OK && SetPortMatrix(voice, -1) == SCE_NGS2_OK && PortMatrixId(voice) == -1);
 
     Ngs2CustomSamplerVoiceState state{};
     Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(Ngs2SamplerVoiceState)) == SCE_NGS2_ERROR_INVALID_OUT_SIZE);
