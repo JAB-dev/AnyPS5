@@ -134,9 +134,9 @@ private:
     static void forgetUnfinishedWrites(QueueWorker& worker, std::span<const std::uint64_t> labelWrites);
     static bool& completionDeferred();
     void deferCompletion(const Submission& submission);
-    void submitOpenWork();
+    void submitOpenWork(const std::shared_ptr<SubmissionProgress>& progress = {});
     void wakeQueueZeroForCompletions();
-    void completeSubmission(std::uint64_t serial, std::uint64_t received, std::span<const std::uint64_t> labelWrites);
+    void completeSubmission(std::uint64_t serial, std::uint64_t received, std::span<const std::uint64_t> labelWrites, const std::shared_ptr<SubmissionProgress>& progress);
     static bool waitFree(const Submission& submission);
     bool queue0Before(std::uint64_t received) const;
     bool orderReleased(std::uint32_t queue, std::uint64_t received) const;
@@ -416,7 +416,7 @@ private:
     std::unordered_set<std::uint64_t> traceShapes, traceKeysSeen, traceKeysEvicted;
     std::list<std::uint64_t> drawOrder;
     std::unordered_map<std::uint64_t, std::shared_ptr<const DrawRelocation>> drawRelocations;
-    std::unordered_map<std::uint64_t, std::shared_ptr<DrawEntry>> drawAliases;
+    std::unordered_map<std::uint64_t, std::uint64_t> drawAliases;
     DrawRelocationPending drawRelocationPending;
     std::unordered_map<std::uint64_t, DrawRelocationTrial> drawRelocationTrials;
     DrawRelocationCounters drawRelocationCounters;
