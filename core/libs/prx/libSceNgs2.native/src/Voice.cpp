@@ -234,9 +234,8 @@ static bool MeasuredFlags(const Ngs2Voice& voice, const Ngs2SamplerVoiceWaveform
     static constexpr std::uint32_t WITH_ONE_BLOCK[] = {0x9, 0x18, 0x30, 0x40, 0x80, 0x100, 0x200, 0x80000000};
     if ((param.flags & ~usedFlags) == 0) return true;
     if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 || param.num_blocks > 1) return false;
-    const auto* first = param.num_blocks == 0 ? std::begin(WITHOUT_BLOCKS) : std::begin(WITH_ONE_BLOCK);
-    const auto* last = param.num_blocks == 0 ? std::end(WITHOUT_BLOCKS) : std::end(WITH_ONE_BLOCK);
-    return std::find(first, last, param.flags) != last;
+    const auto ran = [&](const auto& values) { return std::find(std::begin(values), std::end(values), param.flags) != std::end(values); };
+    return param.num_blocks == 0 ? ran(WITHOUT_BLOCKS) : ran(WITH_ONE_BLOCK);
 }
 
 static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksParam& param) {
