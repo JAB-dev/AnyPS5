@@ -1396,7 +1396,7 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
     if (depthKeepsSampleZero && (read(cx, 0x292) & 1u) == 0) {
         const bool filled = result.topology != VK_PRIMITIVE_TOPOLOGY_POINT_LIST && result.topology != VK_PRIMITIVE_TOPOLOGY_LINE_LIST && result.topology != VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
         const auto sampleInputs = read(cx, 0x1b3) & read(cx, 0x1b4) & (ShaderRecompiler::PixelInputBit(ShaderRecompiler::PixelInput::Ancillary) | ShaderRecompiler::PixelInputBit(ShaderRecompiler::PixelInput::SampleCoverage));
-        Require(filled && !result.alphaToCoverage && (PixelProgramSkipped(queue) || sampleInputs == 0) && (read(cx, 0x203) & 0x100u) == 0 && (read(cx, 0x201) & 0x0f0c0000u) == 0, "a one-sample depth target under a multisampled rasterizer without MSAA_ENABLE is unsupported for points or lines and with alpha-to-coverage, a sample index or coverage input, a sample-mask export, or DB_EQAA Z interpolation or overrasterization");
+        Require(filled && !result.alphaToCoverage && (PixelProgramSkipped(queue) || sampleInputs == 0) && (read(cx, 0x203) & 0x100u) == 0 && (read(cx, 0x201) & 0x0f080000u) == 0, "a one-sample depth target under a multisampled rasterizer without MSAA_ENABLE is unsupported for points or lines and with alpha-to-coverage, a sample index or coverage input, a sample-mask export, or DB_EQAA source Z interpolation or overrasterization");
         result.samples = 1;
         result.customSampleLocations = false;
         result.sampleLocations.fill(0);
@@ -1492,9 +1492,10 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
         color.uintExport = slotExport == 7;
         if (color.samples == 1 && result.samples > 1 && result.colors.empty() && !result.depth && (read(cx, 0x292) & 1u) == 0) {
             const auto sampleInputs = read(cx, 0x1b3) & read(cx, 0x1b4) & (ShaderRecompiler::PixelInputBit(ShaderRecompiler::PixelInput::Ancillary) | ShaderRecompiler::PixelInputBit(ShaderRecompiler::PixelInput::SampleCoverage));
-            Require(!result.perSampleShading && sampleInputs == 0 && (read(cx, 0x203) & 0x100u) == 0, "a one-sample color target under a multisampled rasterizer without MSAA_ENABLE is unsupported with PS_ITER_SAMPLE, a sample index or coverage input, or a sample-mask export");
+            Require(sampleInputs == 0 && (read(cx, 0x203) & 0x100u) == 0, "a one-sample color target under a multisampled rasterizer without MSAA_ENABLE is unsupported with a sample index or coverage input, or a sample-mask export");
             result.samples = 1;
             result.customSampleLocations = false;
+            result.perSampleShading = false;
         }
         if (color.samples > 1 && result.samples == 1 && result.colors.empty() && !result.depth && !result.alphaToCoverage && (read(cx, 0x292) & 1u) == 0) {
             Require(result.conservativeRasterization == VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT || (read(cx, 0x1b3) & 0x44u) == 0, "conservative rasterization with centroid interpolation of a draw raised to a multisampled target is unsupported");

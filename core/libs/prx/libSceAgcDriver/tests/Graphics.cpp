@@ -824,7 +824,7 @@ void msaaEnableClearOneSampleTargetTests() {
     queue = drawC();
     queue.context[0x1b3] |= ShaderRecompiler::PixelInputBit(ShaderRecompiler::PixelInput::Ancillary);
     requireOneSample(queue, "draw C with an enabled but unaddressed ANCILLARY input");
-    constexpr std::string_view refused = "a one-sample color target under a multisampled rasterizer without MSAA_ENABLE is unsupported with PS_ITER_SAMPLE, a sample index or coverage input, or a sample-mask export";
+    constexpr std::string_view refused = "a one-sample color target under a multisampled rasterizer without MSAA_ENABLE is unsupported with a sample index or coverage input, or a sample-mask export";
     for (const auto input : {ShaderRecompiler::PixelInput::Ancillary, ShaderRecompiler::PixelInput::SampleCoverage}) {
         queue = drawC();
         queue.context[0x1b3] = queue.context[0x1b4] = 2u | ShaderRecompiler::PixelInputBit(input);
@@ -832,6 +832,10 @@ void msaaEnableClearOneSampleTargetTests() {
     }
     queue = drawC();
     queue.context[0x293] = 0x10000u;
+    queue.context[0x1b3] = queue.context[0x1b4] = 2u | ShaderRecompiler::PixelInputBit(ShaderRecompiler::PixelInput::PerspectiveSample);
+    requireOneSample(queue, "draw C with PS_ITER_SAMPLE and a sample-interpolated input");
+    Require(!DecodeState(queue).perSampleShading, "PS_ITER_SAMPLE into a one-sample color target without MSAA_ENABLE asked for sample shading");
+    queue.context[0x1b3] = queue.context[0x1b4] = 2u | ShaderRecompiler::PixelInputBit(ShaderRecompiler::PixelInput::Ancillary);
     expectFailure([&] { DecodeState(queue); }, refused);
     queue = drawC();
     queue.context[0x1c4] = 9;
@@ -906,7 +910,7 @@ void msaaEnableClearOneSampleTargetTests() {
     queue.context[0x1b3] = queue.context[0x1b4] = 2u | ShaderRecompiler::PixelInputBit(ShaderRecompiler::PixelInput::Ancillary) | ShaderRecompiler::PixelInputBit(ShaderRecompiler::PixelInput::SampleCoverage);
     Require(AgcDriver::Graphics::PixelProgramSkipped(queue), "the depth-only draw did not skip its pixel program");
     requireOneSampleDepth(queue, 0, "a one-sample depth target whose skipped pixel program has PS_ITER_SAMPLE and sample index and coverage inputs");
-    constexpr std::string_view depthRefused = "a one-sample depth target under a multisampled rasterizer without MSAA_ENABLE is unsupported for points or lines and with alpha-to-coverage, a sample index or coverage input, a sample-mask export, or DB_EQAA Z interpolation or overrasterization";
+    constexpr std::string_view depthRefused = "a one-sample depth target under a multisampled rasterizer without MSAA_ENABLE is unsupported for points or lines and with alpha-to-coverage, a sample index or coverage input, a sample-mask export, or DB_EQAA source Z interpolation or overrasterization";
     for (const bool color : {false, true}) {
         for (const auto input : {ShaderRecompiler::PixelInput::Ancillary, ShaderRecompiler::PixelInput::SampleCoverage}) {
             queue = depthTarget(color);
@@ -934,7 +938,12 @@ void msaaEnableClearOneSampleTargetTests() {
             queue.userConfig[0x242] = primitive;
             expectFailure([&] { DecodeState(queue); }, depthRefused);
         }
-        for (const auto eqaa : {0x00050002u, 0x00090002u, 0x01010002u, 0x08010002u}) {
+        for (const auto eqaa : {0x00040000u, 0x00050000u}) {
+            queue = depthTarget(color);
+            queue.context[0x201] = eqaa;
+            requireOneSampleDepth(queue, color ? 1u : 0u, "a one-sample depth target under a 4x PA_SC_AA_CONFIG without MSAA_ENABLE with DB_EQAA INTERPOLATE_COMP_Z");
+        }
+        for (const auto eqaa : {0x00090002u, 0x000d0000u, 0x01010002u, 0x08010002u}) {
             queue = depthTarget(color);
             queue.context[0x201] = eqaa;
             expectFailure([&] { DecodeState(queue); }, depthRefused);
