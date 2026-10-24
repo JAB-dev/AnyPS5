@@ -11,6 +11,8 @@
 #include "prx/libc/include/General.hpp"
 #include "Ngs2Internal.hpp"
 
+static constexpr std::uint32_t MAX_WAVEFORM_BLOCKS = 32;
+
 union RackOptions {
     Ngs2RackOption common;
     Ngs2SamplerRackOption sampler;
@@ -120,6 +122,12 @@ static int CheckedRackOption(std::uint32_t rackId, const Ngs2RackOption* option,
     return SCE_NGS2_OK;
 }
 
+static int CheckedWaveformBlocks(std::uint32_t rackId, const RackOptions& options) {
+    if (rackId != SCE_NGS2_RACK_ID_SAMPLER) return SCE_NGS2_OK;
+    const auto blocks = options.sampler.max_waveform_blocks;
+    return blocks == 0 || blocks > MAX_WAVEFORM_BLOCKS ? SCE_NGS2_ERROR_INVALID_NUM_WAVEFORM_BLOCKS : SCE_NGS2_OK;
+}
+
 static int CreateRack(Ngs2Handle systemHandle, std::uint32_t rackId, const RackOptions& options, const Ngs2ContextBufferInfo& bufferInfo,
                       const Ngs2BufferAllocator& allocator, Ngs2Handle* handle) {
     static std::uint32_t nextUid = 1;
@@ -137,6 +145,7 @@ static int CreateRack(Ngs2Handle systemHandle, std::uint32_t rackId, const RackO
     rack->name[sizeof(rack->name) - 1] = '\0';
     rack->maxGrainSamples = options.common.max_grain_samples;
     if (rackId == SCE_NGS2_RACK_ID_SAMPLER) rack->maxChannelWorks = options.sampler.max_channel_works;
+    if (rackId == SCE_NGS2_RACK_ID_SAMPLER) rack->maxWaveformBlocks = options.sampler.max_waveform_blocks;
     if (rackId == SCE_NGS2_RACK_ID_CUSTOM_SAMPLER) rack->maxChannelWorks = options.customSampler.max_channel_works;
     if (rackId == SCE_NGS2_RACK_ID_SUBMIXER) rack->maxInputs = options.submixer.max_inputs;
     if (rackId == SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER || rackId == SCE_NGS2_RACK_ID_CUSTOM_MASTERING) rack->maxInputs = options.customSubmixer.max_inputs;
@@ -192,7 +201,8 @@ int APS5_VABI sceNgs2RackCreate(uintptr_t system_handle, uint32_t rack_id, const
     if (handle == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
     if (buffer_info == nullptr) APS5_INVALID_ARG_EX;
     RackOptions options{};
-    const int result = CheckedRackOption(rack_id, option, options);
+    int result = CheckedRackOption(rack_id, option, options);
+    if (result == SCE_NGS2_OK) result = CheckedWaveformBlocks(rack_id, options);
     if (result != SCE_NGS2_OK) return result;
     const Ngs2Lock lock;
     return CreateRack(system_handle, rack_id, options, *buffer_info, {}, handle);
@@ -202,7 +212,8 @@ int APS5_VABI sceNgs2RackCreateWithAllocator(uintptr_t system_handle, uint32_t r
     if (handle == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
     if (allocator == nullptr || allocator->alloc_handler == nullptr || allocator->free_handler == nullptr) APS5_INVALID_ARG_EX;
     RackOptions options{};
-    const int checked = CheckedRackOption(rack_id, option, options);
+    int checked = CheckedRackOption(rack_id, option, options);
+    if (checked == SCE_NGS2_OK) checked = CheckedWaveformBlocks(rack_id, options);
     if (checked != SCE_NGS2_OK) return checked;
     const Ngs2Lock lock;
     if (Ngs2FindSystem(system_handle) == nullptr) return SCE_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
