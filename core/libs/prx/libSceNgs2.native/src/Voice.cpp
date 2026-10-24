@@ -269,8 +269,8 @@ static std::array<float, 5> FilterCoefficients(const Ngs2SamplerVoiceFilterParam
     if (param.type == 11) return {param.frequency, param.q, param.level, std::bit_cast<float>(param.reserved[0]), std::bit_cast<float>(param.reserved[1])};
     const float fc = std::clamp(param.frequency, 0.0001f * rate, 0.499f * rate);
     const float w = (fc / rate) * 6.28318548f;
-    const float s = std::sin(w);
-    const float c = std::cos(w);
+    const auto s = static_cast<float>(std::sin(static_cast<double>(w)));
+    const auto c = static_cast<float>(std::cos(static_cast<double>(w)));
     if (param.type == 9) {
         const float inv = 1.0f / (1.0f + (c + s));
         const float g = s * inv;
