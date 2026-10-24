@@ -258,6 +258,7 @@ static void TestCustomSampler() {
         option.custom_rack_option.module[m].state_size = 16;
     }
     option.max_channel_works = 4;
+    option.max_waveform_blocks = 4;
 
     Ngs2ContextBufferInfo query{};
     Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_CUSTOM_SAMPLER, &option.custom_rack_option.rack_option, &query) == SCE_NGS2_OK);
@@ -317,6 +318,7 @@ static void TestCustomFilter() {
     option.custom_rack_option.num_modules = 1;
     option.custom_rack_option.module[0].module_id = SCE_NGS2_CUSTOM_MODULE_ID_FILTER;
     option.max_channel_works = 1;
+    option.max_waveform_blocks = 4;
 
     auto invalid = option;
     invalid.custom_rack_option.module[0].state_size = 4;
@@ -360,6 +362,7 @@ static void TestCustomFilter() {
     Control(voice, SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER, Ngs2CustomVoiceFilterParam{});
     Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS,
             Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 1, &block});
+    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
     Require(sceNgs2SystemRender(system, &renderInfo, 1) == SCE_NGS2_OK);
     Require(out[2] == 0.0f && out[3] > 0.4f);
     Require(sceNgs2RackDestroy(rack, nullptr) == SCE_NGS2_OK);
@@ -719,6 +722,7 @@ static void TestCustomDelay(std::uint32_t count, const DelayOption& delay) {
     samplerOption.custom_rack_option = DelayRackOption(delay, count).custom_rack_option;
     samplerOption.custom_rack_option.rack_option.size = sizeof(samplerOption);
     samplerOption.max_channel_works = 1;
+    samplerOption.max_waveform_blocks = 4;
     Require(CreateSamplerThrows<std::runtime_error>(samplerOption));
     for (const auto invalid : {DelayOption{19}, DelayOption{24}, DelayOption{20, 2}, DelayOption{20, 0, 0},
                                DelayOption{20, 0, 9}, DelayOption{20, 0, 4, 0.0f}, DelayOption{20, 0, 4, 20001.0f},

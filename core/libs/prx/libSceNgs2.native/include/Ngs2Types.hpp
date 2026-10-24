@@ -12,6 +12,7 @@ static constexpr int SCE_NGS2_ERROR_INVALID_OUT_SIZE = static_cast<int>(0x804A80
 static constexpr int SCE_NGS2_ERROR_INVALID_BUFFER_INFO = static_cast<int>(0x804A8020);
 static constexpr int SCE_NGS2_ERROR_INVALID_BUFFER_ALLOCATOR = static_cast<int>(0x804A8023);
 static constexpr int SCE_NGS2_ERROR_INVALID_SAMPLE_RATE = static_cast<int>(0x804A8051);
+static constexpr int SCE_NGS2_ERROR_FULL_WAVEFORM_BLOCKS = static_cast<int>(0x804A8054);
 static constexpr int SCE_NGS2_ERROR_INVALID_SYSTEM_HANDLE = static_cast<int>(0x804A8201);
 static constexpr int SCE_NGS2_ERROR_INVALID_RACK_HANDLE = static_cast<int>(0x804A8202);
 static constexpr int SCE_NGS2_ERROR_INVALID_WAVEFORM_TYPE = static_cast<int>(0x804A8050);
@@ -113,6 +114,7 @@ static constexpr std::uint32_t SCE_NGS2_CUSTOM_MODULE_ID_CONVOLUTION = 0x23;
 static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE = 1;
 static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND = 2;
 static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET = 4;
+static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CANCEL = 8;
 static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_SILENCE = 0x10;
 
 static constexpr std::uint32_t SCE_NGS2_VOICE_CALLBACK_FLAG_BLOCK_END = 1;

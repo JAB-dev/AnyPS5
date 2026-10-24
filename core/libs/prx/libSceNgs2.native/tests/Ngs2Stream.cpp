@@ -51,8 +51,8 @@ static void TestStreamEndsAtDeclaredSamples() {
     AddBlock(voice, first.data(), first.size() * 2, 20, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE);
     Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
     auto out = RenderI16(system);
-    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == (i >= 3 && i < 7 ? 16384 : 0));
-    Require(Flags(voice) == (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING));
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == (i >= 3 ? 16384 : 0));
+    Require(Flags(voice) == (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING | SCE_NGS2_VOICE_STATE_FLAG_EMPTY));
     Ngs2SamplerVoiceState state{};
     Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
     Require(state.num_decoded_samples == 6 && state.decoded_data_size == 12 && state.waveform_data == first.data() + 6);
@@ -63,18 +63,18 @@ static void TestStreamEndsAtDeclaredSamples() {
     Require(state.num_decoded_samples == 6 && state.decoded_data_size == 12);
 
     AddBlock(voice, second.data(), second.size() * 2, 20, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND);
-    Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK && state.waveform_data == second.data());
+    Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK && state.waveform_data == second.data() + 4);
     out = RenderI16(system);
-    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == (i < 2 ? 16384 : 8192));
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == (i < 7 ? 8192 : 0));
     Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
     Require(state.num_decoded_samples == 14 && state.decoded_data_size == 28 && state.waveform_data == second.data() + 8);
 
     AddBlock(voice, last.data(), last.size() * 2, 20, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND);
     out = RenderI16(system);
-    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == (i < 2 ? 8192 : 4096));
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == (i < 5 ? 4096 : 0));
     Require(Flags(voice) == 0);
     Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
-    Require(state.num_decoded_samples == 0 && state.decoded_data_size == 40 && state.waveform_data == last.data() + 6);
+    Require(state.num_decoded_samples == 0 && state.decoded_data_size == 0 && state.waveform_data == nullptr);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
@@ -97,32 +97,38 @@ static void TestStreamClosedBeforeDeclaredSamples() {
     Require(Flags(voice) == 0);
     Ngs2SamplerVoiceState state{};
     Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
-    Require(state.num_decoded_samples == 0 && state.decoded_data_size == 20);
+    Require(state.num_decoded_samples == 0 && state.decoded_data_size == 0);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
-static void TestStreamRejections() {
+static void TestStreamAdds() {
     const auto system = CreateSystem();
     const auto master = Mastering(system, 1);
     const auto rack = CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER);
     const std::vector<std::int16_t> pcm(6, 1000);
 
     const auto empty = StreamVoice(rack, 0, master);
-    Require(Throws([&] { AddBlock(empty, pcm.data(), pcm.size() * 2, 6, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND); }));
+    AddBlock(empty, pcm.data(), pcm.size() * 2, 6, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND);
+    Event(empty, SCE_NGS2_VOICE_EVENT_PLAY);
 
     const auto complete = StreamVoice(rack, 1, master);
     AddBlock(complete, pcm.data(), pcm.size() * 2, 6, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE);
-    Require(Throws([&] { AddBlock(complete, pcm.data(), pcm.size() * 2, 6, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND); }));
+    AddBlock(complete, pcm.data(), pcm.size() * 2, 6, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND);
+    Event(complete, SCE_NGS2_VOICE_EVENT_PLAY);
 
-    const auto repeating = StreamVoice(rack, 2, master);
-    const Ngs2WaveformBlock repeated{0, pcm.size() * 2, 1, 0, 20, 0, 0};
-    Require(Throws([&] { Control(repeating, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE, 1, &repeated}); }));
+    const auto closed = StreamVoice(rack, 2, master);
+    AddBlock(closed, pcm.data(), pcm.size() * 2, 6, 0);
+    const Ngs2WaveformBlock late{0, pcm.size() * 2, 0, 0, 6, 0, 0};
+    Ngs2SamplerVoiceWaveformBlocksParam param{{sizeof(Ngs2SamplerVoiceWaveformBlocksParam), 0, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS}, pcm.data(), 0, 1, &late};
+    Require(sceNgs2VoiceControl(closed, &param.header) == SCE_NGS2_ERROR_FULL_WAVEFORM_BLOCKS);
+    Event(closed, SCE_NGS2_VOICE_EVENT_PLAY);
 
-    const auto skipping = StreamVoice(rack, 3, master);
-    const Ngs2WaveformBlock skipped{0, pcm.size() * 2, 0, 1, 20, 0, 0};
-    Require(Throws([&] { Control(skipping, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE, 1, &skipped}); }));
+    const auto out = RenderI16(system);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == (i < 3 ? 0 : i < 9 ? 2000 : 0));
+    Require(Flags(empty) == 0 && Flags(complete) == (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING | SCE_NGS2_VOICE_STATE_FLAG_EMPTY));
+    Require(Flags(closed) == 0);
 
-    const auto partial = StreamVoice(rack, 4, master);
+    const auto partial = StreamVoice(rack, 3, master);
     AddBlock(partial, pcm.data(), pcm.size() * 2, 20, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE);
     Require(Throws([&] { AddBlock(partial, pcm.data(), 3, 20, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND); }));
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
@@ -130,7 +136,7 @@ static void TestStreamRejections() {
 
 static const std::int16_t Unused = 0;
 
-static void TestSilenceBlock() {
+static void TestDatalessBlocks() {
     const auto system = CreateSystem();
     const auto master = Mastering(system, 1);
     const auto rack = CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER);
@@ -141,10 +147,10 @@ static void TestSilenceBlock() {
     constexpr std::uint32_t playing = SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING;
     auto out = RenderI16(system);
     for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == 0);
-    Require(Flags(voice) == playing);
+    Require(Flags(voice) == 0);
     Ngs2SamplerVoiceState state{};
     Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
-    Require(state.num_decoded_samples == Grain && state.decoded_data_size == Grain * 2);
+    Require(state.num_decoded_samples == 0 && state.decoded_data_size == 0);
 
     const auto withData = StreamVoice(rack, 1, master);
     const std::vector<std::int16_t> pcm(Grain, 1234);
@@ -152,13 +158,17 @@ static void TestSilenceBlock() {
     Event(withData, SCE_NGS2_VOICE_EVENT_PLAY);
     out = RenderI16(system);
     for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == (i < 3 ? 0 : 1234));
-    Require(Flags(voice) == 0 && Flags(withData) == playing);
+    Require(Flags(withData) == playing);
     out = RenderI16(system);
     for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == (i < 3 ? 1234 : 0));
     Require(Flags(withData) == 0);
 
     const auto dataless = StreamVoice(rack, 2, master);
-    Require(Throws([&] { AddBlock(dataless, &Unused, 0, Grain, 0); }));
+    AddBlock(dataless, &Unused, 0, Grain, 0);
+    Event(dataless, SCE_NGS2_VOICE_EVENT_PLAY);
+    out = RenderI16(system);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == 0);
+    Require(Flags(dataless) == 0);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
@@ -196,7 +206,7 @@ static void TestDrainedStreamReportsEmpty() {
     const std::vector<std::int16_t> longer(Grain * 2, 8192);
     AddBlock(voice, longer.data(), longer.size() * 2, Grain * 2, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE);
     const auto out = RenderI16(system);
-    Require(out[0] == 16384 && out[1] == 16384 && out[2] == 8192);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == 8192);
     Require(Flags(voice) == playing);
 
     AddBlock(voice, pcm.data(), pcm.size() * 2, 4, 0);
@@ -209,8 +219,8 @@ static void TestDrainedStreamReportsEmpty() {
 int main() {
     TestStreamEndsAtDeclaredSamples();
     TestStreamClosedBeforeDeclaredSamples();
-    TestStreamRejections();
-    TestSilenceBlock();
+    TestStreamAdds();
+    TestDatalessBlocks();
     TestDrainedStreamReportsEmpty();
     TestNoBlocksForClearedVoice();
     return 0;

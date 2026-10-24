@@ -16,6 +16,7 @@
 
 static constexpr std::uint32_t NGS2_MAX_CHANNELS = 8;
 static constexpr std::uint32_t MIN_GRAIN_SAMPLES = 64;
+static constexpr std::uint32_t NGS2_POSITION_BITS = 14;
 
 struct Ngs2System;
 struct Ngs2Rack;
@@ -33,15 +34,37 @@ struct Ngs2Piece {
     std::uint64_t frames;
 };
 
+enum class Ngs2Pause : std::uint8_t {
+    None,
+    FadeOut,
+    Silent,
+    Frozen,
+    FadeIn,
+};
+
+struct Ngs2PcmBlock {
+    Ngs2WaveformBlock info{};
+    std::vector<Ngs2Piece> pieces;
+    bool empty = false;
+
+    std::uint64_t Frames() const;
+    std::uint64_t Pass() const;
+};
+
+struct Ngs2PcmRun {
+    Ngs2PcmBlock block;
+    std::int32_t slot = -1;
+    std::uint64_t start = 0;
+    std::uint64_t length = 0;
+    std::uint64_t passes = 0;
+    std::uint64_t first = 0;
+};
+
 struct Ngs2Block {
     const std::uint8_t* data;
     Ngs2WaveformBlock info;
-    std::uint32_t cursor = 0;
     std::uint32_t numRepeated = 0;
     std::size_t dataCursor = 0;
-    bool streaming = false;
-    std::uint64_t availableFrames = 0;
-    std::vector<Ngs2Piece> pieces;
     bool started = false;
 };
 
@@ -124,10 +147,24 @@ struct Ngs2Voice {
     std::unique_ptr<Ngs2ReverbState, Ngs2ReverbDeleter> reverb;
     float pitch = 1.0f;
     std::uint64_t phase = 0;
-    std::uint64_t pendingFrames = 0;
-    bool pastEnd = false;
-    std::array<std::array<float, 4>, NGS2_MAX_CHANNELS> history{};
     std::deque<Ngs2Block> blocks;
+    std::vector<Ngs2PcmBlock> slots;
+    std::uint32_t writeIndex = 0;
+    std::vector<std::uint32_t> order;
+    std::vector<Ngs2PcmRun> prefix;
+    std::vector<Ngs2PcmRun> runs;
+    std::vector<Ngs2PcmRun> clearedRuns;
+    std::uint64_t total = 0;
+    bool endless = false;
+    std::uint64_t position = 0;
+    std::uint64_t signalledTo = 0;
+    Ngs2Pause pause = Ngs2Pause::None;
+    Ngs2Pause ran = Ngs2Pause::None;
+    bool pausePending = false;
+    bool renderedSincePlay = false;
+    bool starving = false;
+    bool inUse = false;
+    bool clearPending = false;
     bool acceptsBlocks = true;
     std::uint64_t decodedSamples = 0;
     std::uint64_t decodedBytes = 0;
@@ -155,7 +192,7 @@ struct Ngs2Voice {
 
     void SetEvent(std::uint32_t eventId);
     void ResetSetup();
-    void ResetPosition();
+    bool Pcm() const;
     const std::uint8_t* WaveformData() const;
 };
 
@@ -168,6 +205,7 @@ struct Ngs2Rack {
     std::uint32_t maxFilters = 0;
     std::uint32_t maxGrainSamples = 0;
     std::uint32_t maxChannelWorks = 0;
+    std::uint32_t maxWaveformBlocks = 0;
     std::uint32_t maxInputs = 0;
     std::uintptr_t userData = 0;
     Ngs2ContextBufferInfo bufferInfo{};
@@ -193,7 +231,6 @@ struct Ngs2System {
 };
 
 std::string Ngs2Hex(std::uint32_t value);
-const std::uint8_t* Ngs2StreamEnd(const Ngs2Voice& voice, const Ngs2Block& block);
 std::recursive_mutex& Ngs2Mutex();
 
 class Ngs2Lock {
@@ -240,6 +277,12 @@ std::size_t Ngs2Atrac9BlockBytes(const Ngs2Voice& voice, const Ngs2WaveformBlock
 void Ngs2RestartAtrac9(Ngs2Voice& voice);
 void Ngs2ConsumeAtrac9(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t systemRate);
 bool Ngs2FinishBlock(Ngs2Voice& voice);
+void Ngs2BuildPcmRuns(Ngs2Voice& voice);
+void Ngs2ApplyPendingClear(Ngs2Voice& voice);
+const std::uint8_t* Ngs2PcmFrame(const Ngs2Voice& voice, std::int64_t index);
+std::uint64_t Ngs2PcmDecoded(const Ngs2Voice& voice);
+std::uint64_t Ngs2PcmDecodedBytes(const Ngs2Voice& voice);
+std::uint32_t Ngs2PcmStateFlags(const Ngs2Voice& voice);
 int Ngs2CheckCustomRack(std::uint32_t rackId, const Ngs2CustomRackOption& option, std::uint32_t maxInputs);
 void Ngs2SetupUserFx(Ngs2Rack& rack, const Ngs2CustomRackOption& option);
 void Ngs2CleanupUserFx(Ngs2Rack& rack);

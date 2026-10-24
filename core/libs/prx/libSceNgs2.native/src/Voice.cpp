@@ -19,15 +19,206 @@ static constexpr std::uint8_t COMMAND_TYPE_INT = 3;
 static constexpr std::uint8_t COMMAND_TYPE_UINT = 4;
 static constexpr std::uint8_t COMMAND_TYPE_FLOAT_ARRAY = 0x11;
 static constexpr float MAX_MATRIX_LEVEL = 4.0f;
+static constexpr std::uint32_t FOREVER = 0xffffffff;
+static constexpr std::uint64_t NEVER = std::uint64_t{1} << 62;
 
-void Ngs2Voice::ResetPosition() {
-    phase = 0;
-    pendingFrames = 0;
-    pastEnd = false;
-    history = {};
+struct Ngs2ReturnCode {
+    int code;
+};
+
+std::uint64_t Ngs2PcmBlock::Frames() const {
+    std::uint64_t frames = 0;
+    for (const auto& piece : pieces) frames += piece.frames;
+    return frames;
+}
+
+std::uint64_t Ngs2PcmBlock::Pass() const {
+    return empty ? 0 : std::min<std::uint64_t>(static_cast<std::uint64_t>(info.num_skip_samples) + info.num_samples, Frames());
+}
+
+bool Ngs2Voice::Pcm() const {
+    return waveformType == SCE_NGS2_WAVEFORM_TYPE_PCM_I16L;
+}
+
+static std::uint64_t RunEnd(const Ngs2PcmRun& run) {
+    return run.passes == 0 ? NEVER : run.start + run.length * run.passes;
+}
+
+void Ngs2BuildPcmRuns(Ngs2Voice& voice) {
+    voice.runs = voice.prefix;
+    voice.endless = false;
+    std::uint64_t start = voice.runs.empty() ? 0 : RunEnd(voice.runs.back());
+    for (const auto slot : voice.order) {
+        const auto& block = voice.slots[slot];
+        const bool forever = block.info.num_repeats == FOREVER;
+        if (forever && block.Pass() == 0) throw std::runtime_error("NGS2: an endlessly repeated PCM waveform block with no frames is not implemented");
+        voice.runs.push_back({block, static_cast<std::int32_t>(slot), start, block.Pass(), forever ? 0 : std::max<std::uint64_t>(block.info.num_repeats, 1), 0});
+        start = std::min(RunEnd(voice.runs.back()), NEVER);
+        voice.endless = voice.endless || forever;
+    }
+    voice.total = voice.endless ? NEVER : start;
+}
+
+const std::uint8_t* Ngs2PcmFrame(const Ngs2Voice& voice, std::int64_t index) {
+    if (index < 0) return nullptr;
+    const auto at = static_cast<std::uint64_t>(index);
+    for (const auto& run : voice.runs) {
+        if (run.length == 0 || at < run.start || at >= RunEnd(run)) continue;
+        auto frame = (at - run.start) % run.length + run.first;
+        for (const auto& piece : run.block.pieces) {
+            if (frame < piece.frames) return piece.data + frame * voice.channels * sizeof(std::int16_t);
+            frame -= piece.frames;
+        }
+        return nullptr;
+    }
+    return nullptr;
+}
+
+static std::uint64_t PcmDecodedFrames(const Ngs2Voice& voice) {
+    return std::min(voice.position >> NGS2_POSITION_BITS, voice.total);
+}
+
+std::uint64_t Ngs2PcmDecoded(const Ngs2Voice& voice) {
+    const auto decoded = PcmDecodedFrames(voice);
+    std::uint64_t skipped = 0;
+    for (const auto& run : voice.runs) {
+        if (run.length == 0 || run.start > decoded) continue;
+        const auto started = (decoded - run.start) / run.length + 1;
+        skipped += (run.passes == 0 ? started : std::min(started, run.passes)) * run.block.info.num_skip_samples;
+    }
+    return decoded > skipped ? decoded - skipped : 0;
+}
+
+std::uint64_t Ngs2PcmDecodedBytes(const Ngs2Voice& voice) {
+    const auto frameBytes = voice.channels * sizeof(std::int16_t);
+    if (!voice.starving) return PcmDecodedFrames(voice) * frameBytes;
+    std::uint64_t frames = 0;
+    for (const auto& run : voice.runs) frames += run.block.Frames() * run.passes;
+    return frames * frameBytes;
+}
+
+std::uint32_t Ngs2PcmStateFlags(const Ngs2Voice& voice) {
+    if (voice.state != Ngs2PlayState::Playing) return voice.inUse ? SCE_NGS2_VOICE_STATE_FLAG_INUSE : static_cast<std::uint32_t>(voice.state);
+    std::uint32_t flags = SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING;
+    if (voice.ran == Ngs2Pause::FadeOut) flags = SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PAUSED;
+    if (voice.ran == Ngs2Pause::Silent || voice.ran == Ngs2Pause::Frozen) flags |= SCE_NGS2_VOICE_STATE_FLAG_PAUSED;
+    return voice.starving ? flags | SCE_NGS2_VOICE_STATE_FLAG_EMPTY : flags;
+}
+
+static const Ngs2PcmRun* RunAt(const Ngs2Voice& voice, std::uint64_t at) {
+    for (const auto& run : voice.runs) {
+        if (run.length != 0 && at >= run.start && at < RunEnd(run)) return &run;
+    }
+    return nullptr;
+}
+
+static std::vector<Ngs2PcmRun> Clip(const std::vector<Ngs2PcmRun>& runs, std::uint64_t at) {
+    std::vector<Ngs2PcmRun> kept;
+    for (const auto& run : runs) {
+        if (run.start >= at) continue;
+        if (RunEnd(run) <= at) {
+            kept.push_back(run);
+            continue;
+        }
+        const auto full = (at - run.start) / run.length;
+        const auto part = (at - run.start) % run.length;
+        if (full != 0) {
+            kept.push_back(run);
+            kept.back().passes = full;
+        }
+        if (part != 0) {
+            kept.push_back(run);
+            kept.back().start = run.start + full * run.length;
+            kept.back().length = part;
+            kept.back().passes = 1;
+        }
+    }
+    return kept;
+}
+
+void Ngs2ApplyPendingClear(Ngs2Voice& voice) {
+    voice.clearPending = false;
+    const auto old = std::move(voice.clearedRuns);
+    voice.clearedRuns.clear();
+    const auto unsupported = [] { throw std::runtime_error("NGS2: a RESET add on a playing PCM sampler voice with no PLAY before the next render is not implemented for this queue"); };
+    if (voice.order.size() != 1) unsupported();
+    const auto slot = voice.order.front();
+    const auto& block = voice.slots[slot];
+    if (block.empty || block.Pass() == 0 || block.info.num_skip_samples != 0 || block.info.num_repeats > 1) unsupported();
+    voice.runs = old;
+    voice.endless = std::any_of(old.begin(), old.end(), [](const Ngs2PcmRun& run) { return run.passes == 0; });
+    voice.total = voice.endless ? NEVER : old.empty() ? 0 : RunEnd(old.back());
+    const auto decoded = PcmDecodedFrames(voice);
+    if (voice.starving) {
+        voice.prefix = old;
+        voice.prefix.push_back({block, static_cast<std::int32_t>(slot), decoded, block.Pass(), 1, 0});
+    } else {
+        const auto* run = RunAt(voice, decoded);
+        if (run == nullptr) unsupported();
+        const auto offset = (decoded - run->start) % run->length;
+        if (offset >= block.Pass()) unsupported();
+        const auto length = std::min(block.Pass() - offset, run->length - offset);
+        voice.prefix = Clip(old, decoded);
+        voice.prefix.push_back({block, static_cast<std::int32_t>(slot), decoded, length, 1, offset});
+    }
+    voice.order.clear();
+    Ngs2BuildPcmRuns(voice);
+}
+
+static void DropPendingClear(Ngs2Voice& voice) {
+    if (!voice.clearPending) return;
+    voice.clearPending = false;
+    voice.clearedRuns.clear();
+    voice.prefix.clear();
+    Ngs2BuildPcmRuns(voice);
+}
+
+static void PlayPcm(Ngs2Voice& voice) {
+    voice.clearPending = false;
+    voice.clearedRuns.clear();
+    voice.prefix.clear();
+    voice.order.clear();
+    for (std::uint32_t slot = 0; slot < voice.writeIndex; slot++) voice.order.push_back(slot);
+    Ngs2BuildPcmRuns(voice);
+    voice.inUse = true;
+    voice.stateFlags |= SCE_NGS2_VOICE_STATE_FLAG_INUSE;
+    if (voice.order.empty()) return;
+    voice.state = Ngs2PlayState::Playing;
+    voice.position = 0;
+    voice.signalledTo = 0;
+    voice.pause = Ngs2Pause::None;
+    voice.pausePending = false;
+    voice.renderedSincePlay = false;
+    voice.starving = false;
+}
+
+static bool SetPcmEvent(Ngs2Voice& voice, std::uint32_t eventId) {
+    switch (eventId) {
+        case SCE_NGS2_VOICE_EVENT_PLAY:
+            PlayPcm(voice);
+            if (voice.userFxHandler) voice.userFxFlags = 1;
+            return true;
+        case SCE_NGS2_VOICE_EVENT_PAUSE:
+            if (voice.state != Ngs2PlayState::Playing || voice.pause != Ngs2Pause::None) return true;
+            if (voice.clearPending) throw std::runtime_error("NGS2: PAUSE after a RESET add on a playing PCM sampler voice is not implemented");
+            voice.pausePending = true;
+            return true;
+        case SCE_NGS2_VOICE_EVENT_RESUME:
+            if (voice.pausePending) voice.pausePending = false;
+            else if (voice.pause == Ngs2Pause::Silent || voice.pause == Ngs2Pause::Frozen) voice.pause = Ngs2Pause::FadeIn;
+            return true;
+        case SCE_NGS2_VOICE_EVENT_STOP:
+        case SCE_NGS2_VOICE_EVENT_STOP_IMM:
+        case SCE_NGS2_VOICE_EVENT_KILL:
+            voice.inUse = false;
+            DropPendingClear(voice);
+            return false;
+        default: return false;
+    }
 }
 
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
+    if (Pcm() && SetPcmEvent(*this, eventId)) return;
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
             if (state == Ngs2PlayState::Empty || state == Ngs2PlayState::Stopped) {
@@ -67,8 +258,25 @@ void Ngs2Voice::ResetSetup() {
     waveformType = 0;
     atrac9 = {};
     pitch = 1.0f;
-    ResetPosition();
+    phase = 0;
     blocks.clear();
+    slots.clear();
+    writeIndex = 0;
+    order.clear();
+    prefix.clear();
+    runs.clear();
+    clearedRuns.clear();
+    total = 0;
+    endless = false;
+    position = 0;
+    signalledTo = 0;
+    pause = Ngs2Pause::None;
+    ran = Ngs2Pause::None;
+    pausePending = false;
+    renderedSincePlay = false;
+    starving = false;
+    inUse = false;
+    clearPending = false;
     acceptsBlocks = true;
     decodedSamples = 0;
     decodedBytes = 0;
@@ -81,22 +289,35 @@ void Ngs2Voice::ResetSetup() {
     callbackFlags = 0;
 }
 
-const std::uint8_t* Ngs2StreamEnd(const Ngs2Voice& voice, const Ngs2Block& block) {
-    const auto& last = block.pieces.back();
-    return last.data + last.frames * voice.channels * sizeof(std::int16_t);
+static const Ngs2PcmRun* DecodedRun(const Ngs2Voice& voice) {
+    if (voice.state != Ngs2PlayState::Playing) return nullptr;
+    const auto decoded = PcmDecodedFrames(voice);
+    const auto* run = RunAt(voice, decoded);
+    if (run != nullptr || decoded == 0) return run;
+    return RunAt(voice, decoded - 1);
+}
+
+static std::uint64_t PcmUserData(const Ngs2Voice& voice) {
+    const auto* run = DecodedRun(voice);
+    return run == nullptr ? 0 : run->block.info.user_data;
 }
 
 const std::uint8_t* Ngs2Voice::WaveformData() const {
-    if (blocks.empty()) return waveformEnd;
-    const auto& block = blocks.front();
-    if (waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) return block.data + block.dataCursor;
-    if (block.streaming) {
-        for (const auto& piece : block.pieces) {
-            if (block.cursor >= piece.firstFrame && block.cursor - piece.firstFrame < piece.frames) return piece.data + (block.cursor - piece.firstFrame) * channels * sizeof(std::int16_t);
+    if (Pcm()) {
+        const auto* run = DecodedRun(*this);
+        if (run == nullptr) return nullptr;
+        const auto offset = PcmDecodedFrames(*this) - run->start;
+        auto frame = (offset == run->length * run->passes ? run->length : offset % run->length) + run->first;
+        const auto frameBytes = channels * sizeof(std::int16_t);
+        for (const auto& piece : run->block.pieces) {
+            if (frame < piece.frames) return piece.data + frame * frameBytes;
+            frame -= piece.frames;
         }
-        return Ngs2StreamEnd(*this, block);
+        const auto& last = run->block.pieces.back();
+        return last.data + last.frames * frameBytes;
     }
-    return block.data + (static_cast<std::size_t>(block.info.num_skip_samples) + block.cursor) * channels * sizeof(std::int16_t);
+    if (blocks.empty()) return waveformEnd;
+    return blocks.front().data + blocks.front().dataCursor;
 }
 
 static Ngs2Port& PortAt(Ngs2Voice& voice, std::uint32_t port) {
@@ -191,50 +412,104 @@ static void SetupSampler(Ngs2Voice& voice, const Ngs2WaveformFormat& format) {
     if (format.waveform_type == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) Ngs2SetupAtrac9(voice, format);
 }
 
-static void AppendStreamData(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksParam& param, std::size_t frameBytes) {
-    if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) {
-        const bool pendingWaveform = voice.atrac9.remainingSamples != 0 ||
-            std::any_of(voice.blocks.begin(), voice.blocks.end(), [](const Ngs2Block& block) { return block.info.num_samples != 0; });
-        if (!pendingWaveform) throw std::invalid_argument("NGS2: appending compressed data requires a waveform");
-        for (std::uint32_t i = 0; i < param.num_blocks; ++i) {
-            auto block = param.blocks[i];
-            if (block.data_size == 0) continue;
-            block.num_samples = 0;
-            block.num_skip_samples = 0;
-            block.num_repeats = 0;
-            voice.blocks.push_back({static_cast<const std::uint8_t*>(param.data) + block.data_offset, block});
-        }
-        return;
+static void AppendStreamData(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksParam& param) {
+    const bool pendingWaveform = voice.atrac9.remainingSamples != 0 ||
+        std::any_of(voice.blocks.begin(), voice.blocks.end(), [](const Ngs2Block& block) { return block.info.num_samples != 0; });
+    if (!pendingWaveform) throw std::invalid_argument("NGS2: appending compressed data requires a waveform");
+    for (std::uint32_t i = 0; i < param.num_blocks; ++i) {
+        auto block = param.blocks[i];
+        if (block.data_size == 0) continue;
+        block.num_samples = 0;
+        block.num_skip_samples = 0;
+        block.num_repeats = 0;
+        voice.blocks.push_back({static_cast<const std::uint8_t*>(param.data) + block.data_offset, block});
     }
-    if (voice.blocks.empty() || !voice.blocks.back().streaming) throw std::runtime_error("NGS2: appending waveform data to a voice without a streaming waveform is not implemented");
-    auto& stream = voice.blocks.back();
+}
+
+static std::uint32_t Unconsumed(const Ngs2Voice& voice) {
+    const auto decoded = PcmDecodedFrames(voice);
+    std::uint32_t count = 0;
+    for (const auto& run : voice.runs) {
+        if (run.slot < 0) continue;
+        std::uint64_t end = 0;
+        for (const auto& other : voice.runs) {
+            if (other.slot == run.slot) end = std::max(end, RunEnd(other));
+        }
+        if (voice.state != Ngs2PlayState::Playing || end > decoded) count++;
+    }
+    return count;
+}
+
+static void AddPcmBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksParam& param) {
+    const auto capacity = voice.rack->maxWaveformBlocks;
+    if (capacity == 0) throw std::runtime_error("NGS2: a sampler rack with no waveform blocks is not implemented");
+    if (voice.clearPending) throw std::runtime_error("NGS2: an add after a RESET add on a playing PCM sampler voice is not implemented");
+    const std::size_t frameBytes = voice.channels * sizeof(std::int16_t);
+    for (std::uint32_t i = 0; i < param.num_blocks; i++) {
+        if (param.blocks[i].data_size % frameBytes != 0) throw std::runtime_error("NGS2: a PCM waveform block with a partial frame is not implemented");
+    }
+    if (voice.slots.empty()) voice.slots.resize(capacity);
+    if ((param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET) != 0) {
+        ++voice.waveformRevision;
+        if (voice.state == Ngs2PlayState::Playing) {
+            if (voice.pausePending || voice.pause != Ngs2Pause::None) throw std::runtime_error("NGS2: a RESET add on a paused PCM sampler voice is not implemented");
+            voice.clearedRuns = voice.runs;
+            voice.clearPending = true;
+        }
+        voice.slots.assign(capacity, {});
+        voice.writeIndex = 0;
+        voice.order.clear();
+        voice.prefix.clear();
+        voice.acceptsBlocks = true;
+        Ngs2BuildPcmRuns(voice);
+    }
+    if (!voice.acceptsBlocks) throw Ngs2ReturnCode{SCE_NGS2_ERROR_FULL_WAVEFORM_BLOCKS};
+    const bool onlyData = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND) != 0;
+    const auto dataOnly = [&](const Ngs2WaveformBlock& block) { return onlyData || (block.num_samples == 0 && block.num_skip_samples == 0); };
+    const auto normal = static_cast<std::uint32_t>(std::count_if(param.blocks, param.blocks + param.num_blocks, [&](const Ngs2WaveformBlock& block) { return !dataOnly(block); }));
+    if (normal > capacity - std::min(capacity, Unconsumed(voice))) throw Ngs2ReturnCode{SCE_NGS2_ERROR_FULL_WAVEFORM_BLOCKS};
+    std::uint32_t placed = 0;
     for (std::uint32_t i = 0; i < param.num_blocks; i++) {
         const auto& block = param.blocks[i];
-        if (block.data_size == 0) continue;
-        if (block.data_size % frameBytes != 0 || block.num_skip_samples != 0 || block.num_repeats != 0) {
-            throw std::runtime_error("NGS2: appending a waveform block with skipped samples, repeats or a partial frame is not implemented");
+        const auto* data = static_cast<const std::uint8_t*>(param.data) + block.data_offset;
+        if (dataOnly(block) && !voice.order.empty()) {
+            auto& last = voice.slots[voice.order.back()];
+            last.pieces.push_back({data, last.Frames(), block.data_size / frameBytes});
+            continue;
         }
-        stream.pieces.push_back({static_cast<const std::uint8_t*>(param.data) + block.data_offset, stream.availableFrames, block.data_size / frameBytes});
-        stream.availableFrames += block.data_size / frameBytes;
+        if (dataOnly(block) && !voice.prefix.empty()) throw std::runtime_error("NGS2: data added after a RESET add on a playing PCM sampler voice is not implemented");
+        if (voice.writeIndex == capacity) {
+            if (placed != 0) throw std::runtime_error("NGS2: a waveform block add that wraps the block ring part way is not implemented");
+            voice.writeIndex = 0;
+        }
+        voice.slots[voice.writeIndex] = {block, {{data, 0, block.data_size / frameBytes}}, dataOnly(block)};
+        voice.order.push_back(voice.writeIndex++);
+        placed++;
     }
+    voice.acceptsBlocks = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE) != 0;
+    if (!voice.clearPending) Ngs2BuildPcmRuns(voice);
 }
 
 static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksParam& param) {
     constexpr std::uint32_t knownFlags = SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_SILENCE;
-    if ((param.flags & ~knownFlags) != 0) throw std::runtime_error("NGS2: waveform block flags " + Ngs2Hex(param.flags) + " are not implemented");
+    constexpr std::uint32_t pcmFlags = knownFlags | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CANCEL;
+    if ((param.flags & ~(voice.Pcm() ? pcmFlags : knownFlags)) != 0) throw std::runtime_error("NGS2: waveform block flags " + Ngs2Hex(param.flags) + " are not implemented");
     if ((param.num_blocks != 0 && (voice.channels == 0 || param.blocks == nullptr || param.data == nullptr)) || (voice.channels == 0 && (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND) != 0)) APS5_INVALID_ARG_EX;
+    if (voice.Pcm()) {
+        AddPcmBlocks(voice, param);
+        return;
+    }
     const bool reset = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET) != 0;
     if (!voice.acceptsBlocks && !reset) throw std::invalid_argument("NGS2: the voice waveform was already closed");
     if (reset) {
         ++voice.waveformRevision;
         voice.blocks.clear();
-        voice.ResetPosition();
+        voice.phase = 0;
         voice.waveformEnd = nullptr;
         if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) Ngs2RestartAtrac9(voice);
     }
-    const std::size_t frameBytes = voice.channels * sizeof(std::int16_t);
     if ((param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND) != 0) {
-        AppendStreamData(voice, param, frameBytes);
+        AppendStreamData(voice, param);
         voice.acceptsBlocks = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE) != 0;
         return;
     }
@@ -243,26 +518,13 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
     for (std::uint32_t i = 0; i < param.num_blocks; i++) {
         const auto& block = param.blocks[i];
         if (block.num_samples == 0 && block.data_size == 0) continue;
-        if (allowsSilence && block.data_size == 0) {
-            if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) throw std::runtime_error("NGS2: a dataless waveform block under the silence flag is not implemented for ATRAC9 voices");
-            voice.blocks.push_back({nullptr, block});
-            continue;
-        }
-        const std::uint64_t bytes = voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 ? Ngs2Atrac9BlockBytes(voice, block)
-                                  : (static_cast<std::uint64_t>(block.num_skip_samples) + block.num_samples) * frameBytes;
-        const bool streaming = block.num_samples != 0 && bytes > block.data_size && voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_PCM_I16L &&
-                               block.num_skip_samples == 0 && block.num_repeats == 0 && block.data_size >= frameBytes && block.data_size % frameBytes == 0;
-        const bool compressedStream = voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 && voice.acceptsBlocks && block.num_repeats == 0;
-        if (block.num_samples == 0 || (bytes > block.data_size && !streaming && !compressedStream)) {
+        if (allowsSilence && block.data_size == 0) throw std::runtime_error("NGS2: a dataless waveform block under the silence flag is not implemented for ATRAC9 voices");
+        const std::uint64_t bytes = Ngs2Atrac9BlockBytes(voice, block);
+        const bool compressedStream = voice.acceptsBlocks && block.num_repeats == 0;
+        if (block.num_samples == 0 || (bytes > block.data_size && !compressedStream)) {
             throw std::invalid_argument("NGS2: waveform block " + std::to_string(i) + " does not fit its data");
         }
         voice.blocks.push_back({static_cast<const std::uint8_t*>(param.data) + block.data_offset, block});
-        if (streaming) {
-            auto& stream = voice.blocks.back();
-            stream.streaming = true;
-            stream.availableFrames = block.data_size / frameBytes;
-            stream.pieces.push_back({stream.data, 0, stream.availableFrames});
-        }
     }
 }
 
@@ -300,6 +562,17 @@ void Ngs2SetFilter(Ngs2Voice& voice, const Ngs2SamplerVoiceFilterParam& param) {
     filter.a2 = (1.0 - alpha) * inverseA0;
 }
 
+static void ExitPcmLoop(Ngs2Voice& voice) {
+    for (const auto& run : voice.runs) {
+        if (run.slot < 0 || (run.passes != 0 && run.passes <= 1)) continue;
+        const auto decoded = PcmDecodedFrames(voice);
+        const auto current = voice.state == Ngs2PlayState::Playing && decoded > run.start ? (decoded - run.start) / run.length + 1 : 1;
+        voice.slots[run.slot].info.num_repeats = static_cast<std::uint32_t>(run.passes == 0 ? current : std::min(current, run.passes));
+        Ngs2BuildPcmRuns(voice);
+        return;
+    }
+}
+
 static void ApplySamplerParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
     switch (param.id) {
         case SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP:
@@ -312,6 +585,10 @@ static void ApplySamplerParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& para
             break;
         case SCE_NGS2_SAMPLER_VOICE_PARAM_EXIT_LOOP:
         case SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_EXIT_LOOP: {
+            if (voice.Pcm()) {
+                ExitPcmLoop(voice);
+                break;
+            }
             const auto looping = std::find_if(voice.blocks.begin(), voice.blocks.end(), [](const Ngs2Block& block) { return block.info.num_repeats != 0; });
             if (looping != voice.blocks.end()) looping->info.num_repeats = 0;
             break;
@@ -407,9 +684,13 @@ int APS5_VABI sceNgs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamHe
     auto* found = Ngs2FindVoice(voice_handle);
     if (found == nullptr) return SCE_NGS2_ERROR_INVALID_VOICE_HANDLE;
     auto& voice = *found;
-    for (const auto* param = param_list;; param = reinterpret_cast<const Ngs2VoiceParamHeader*>(reinterpret_cast<const std::uint8_t*>(param) + param->next)) {
-        ApplyParam(voice, *param);
-        if (param->next == 0) break;
+    try {
+        for (const auto* param = param_list;; param = reinterpret_cast<const Ngs2VoiceParamHeader*>(reinterpret_cast<const std::uint8_t*>(param) + param->next)) {
+            ApplyParam(voice, *param);
+            if (param->next == 0) break;
+        }
+    } catch (const Ngs2ReturnCode& result) {
+        return result.code;
     }
     return SCE_NGS2_OK;
 }
@@ -454,7 +735,7 @@ int APS5_VABI sceNgs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* state
             sampler.envelope_height = 1.0f;
             sampler.num_decoded_samples = voice.decodedSamples;
             sampler.decoded_data_size = voice.decodedBytes;
-            sampler.user_data = voice.blocks.empty() ? 0 : voice.blocks.front().info.user_data;
+            sampler.user_data = voice.Pcm() ? PcmUserData(voice) : voice.blocks.empty() ? 0 : voice.blocks.front().info.user_data;
             sampler.waveform_data = voice.WaveformData();
             return SCE_NGS2_OK;
         }
