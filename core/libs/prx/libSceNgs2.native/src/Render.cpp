@@ -263,7 +263,7 @@ static void MixInputs(Ngs2Voice& voice, const std::vector<Ngs2Voice*>& voices, s
             RenderVoice(*source, voices, grain, systemRate);
             if (source->channels == 0) continue;
             auto gains = PortGains(voice, *source, port);
-            if (port.mixed && port.mixedGains.size() != gains.size()) throw std::runtime_error("NGS2: a port gain ramp into another channel layout is not implemented");
+            if (port.mixed && port.mixedGains.size() != gains.size()) port.mixed = false;
             if (source->hasSamples && MixPort(voice, *source, port, gains, grain)) voice.hasSamples = true;
             port.mixedGains = std::move(gains);
             port.mixed = true;

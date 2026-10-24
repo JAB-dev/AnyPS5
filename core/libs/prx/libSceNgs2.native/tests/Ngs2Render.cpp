@@ -649,7 +649,7 @@ static void TestPortGainRampResetsLikePs5() {
         rig.Volume(0.25f);
         Event(rig.sampler, SCE_NGS2_VOICE_EVENT_PAUSE);
         Event(rig.sampler, SCE_NGS2_VOICE_EVENT_RESUME);
-        ExpectRampFrames(rig.Render(), 1, 0.25f, 0.5f, 0.25f, 256, 3);
+        ExpectRampFrames(rig.Render(), 1, 0.25f, 0.5f, 0.25f, 256);
     }
     {
         GainRig rig(256, 1, 8192, 256 * 4);
@@ -657,7 +657,7 @@ static void TestPortGainRampResetsLikePs5() {
         rig.Render();
         rig.Volume(0.25f);
         Patch(rig.sampler, rig.master);
-        ExpectRampFrames(rig.Render(), 1, 0.25f, 0.5f, 0.25f, 256, 3);
+        ExpectRampFrames(rig.Render(), 1, 0.25f, 0.5f, 0.25f, 256);
     }
     {
         GainRig rig(256, 1, 8192, 256 * 4);
@@ -665,7 +665,7 @@ static void TestPortGainRampResetsLikePs5() {
         rig.Render();
         rig.Volume(4.0f);
         rig.Volume(0.25f);
-        ExpectRampFrames(rig.Render(), 1, 0.25f, 1.0f, 0.25f, 256, 3);
+        ExpectRampFrames(rig.Render(), 1, 0.25f, 1.0f, 0.25f, 256);
     }
     {
         GainRig rig(256, 1, 8192, 256 * 4);
@@ -673,7 +673,7 @@ static void TestPortGainRampResetsLikePs5() {
         rig.Render();
         rig.Volume(0.25f);
         rig.Volume(0.5f);
-        ExpectFlatFrames(rig.Render(), 1, 0.125f, 3, 256);
+        ExpectFlatFrames(rig.Render(), 1, 0.125f, 0, 256);
     }
 }
 
