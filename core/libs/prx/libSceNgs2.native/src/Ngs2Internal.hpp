@@ -93,6 +93,10 @@ struct Ngs2Port {
     Ngs2Voice* dest = nullptr;
     float volume = 1.0f;
     std::int32_t matrix = -1;
+    std::vector<float> mixedGains;
+    std::uint32_t mixedOutputs = 0;
+    std::uint32_t mixedSources = 0;
+    bool mixed = false;
 };
 
 struct Ngs2UserFx2 {
@@ -118,6 +122,7 @@ struct Ngs2Voice {
     Ngs2PlayState state = Ngs2PlayState::Empty;
     std::uint32_t stateFlags = 0;
     std::uint32_t channels = 0;
+    std::uint32_t inputChannels = 0;
     std::uint32_t sampleRate = 0;
     std::uint32_t waveformType = 0;
     Ngs2Atrac9 atrac9;
@@ -153,6 +158,7 @@ struct Ngs2Voice {
     void SetEvent(std::uint32_t eventId);
     void ResetSetup();
     const std::uint8_t* WaveformData() const;
+    std::uint32_t InputChannels() const { return inputChannels != 0 ? inputChannels : channels; }
 };
 
 struct Ngs2Rack {
