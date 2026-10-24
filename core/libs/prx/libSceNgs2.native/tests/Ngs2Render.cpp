@@ -449,6 +449,30 @@ static void TestPcmCallbackRefill() {
     }
 }
 
+static void APS5_VABI EventFromCallback(const Ngs2VoiceCallbackInfo* info) {
+    Event(info->voice_handle, static_cast<std::uint32_t>(info->callback_data));
+}
+
+static void TestPcmCallbackEvents() {
+    for (const auto event : {SCE_NGS2_VOICE_EVENT_PLAY, SCE_NGS2_VOICE_EVENT_PAUSE, SCE_NGS2_VOICE_EVENT_RESUME}) {
+        const auto system = CreateSystem();
+        const std::vector<std::int16_t> pcm(Grain - 2, 16384);
+        const auto sampler = Sampler(system, pcm, 0);
+        Patch(sampler, Mastering(system, 1));
+        Control(sampler, SCE_NGS2_VOICE_PARAM_CALLBACK, Ngs2VoiceCallbackParam{{}, EventFromCallback, event, SCE_NGS2_VOICE_CALLBACK_FLAG_BLOCK_END, 0});
+        Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+        if (event == SCE_NGS2_VOICE_EVENT_RESUME) Event(sampler, SCE_NGS2_VOICE_EVENT_PAUSE);
+        bool unsupported = false;
+        try {
+            RenderI16(system);
+        } catch (const std::runtime_error&) {
+            unsupported = true;
+        }
+        Require(unsupported);
+        Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    }
+}
+
 struct PcmSetupCallback {
     uintptr_t master;
     std::uint32_t channels;
@@ -2129,6 +2153,7 @@ int main() {
     TestUserData();
     TestPcmCallbackReset();
     TestPcmCallbackRefill();
+    TestPcmCallbackEvents();
     TestPcmCallbackSetup();
     TestSetupClearsCallback();
     TestMasteringGain();
