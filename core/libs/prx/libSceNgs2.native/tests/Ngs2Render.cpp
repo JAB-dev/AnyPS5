@@ -1561,6 +1561,7 @@ static MatrixChain MatrixSampler(std::uint32_t maxMatrices, std::uint32_t voiceC
     option.rack_option.max_voice_channels = voiceChannels;
     option.rack_option.max_output_channels = outputChannels;
     option.max_filters = 1;
+    option.max_waveform_blocks = 4;
     Ngs2ContextBufferInfo query{};
     Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_SAMPLER, &option.rack_option, &query) == SCE_NGS2_OK);
     const auto buffer = Buffer(query);
@@ -2003,6 +2004,7 @@ static void TestPortMatrixIdRanges() {
     option.rack_option.max_voices = 1;
     option.rack_option.max_matrices = 1;
     option.rack_option.max_ports = 8;
+    option.max_waveform_blocks = 4;
     Ngs2ContextBufferInfo query{};
     Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_SAMPLER, &option.rack_option, &query) == SCE_NGS2_OK);
     const auto buffer = Buffer(query);
