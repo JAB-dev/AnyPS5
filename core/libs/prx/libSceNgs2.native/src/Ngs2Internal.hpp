@@ -126,10 +126,8 @@ struct Ngs2Voice {
     std::uint64_t phase = 0;
     std::uint64_t pendingFrames = 0;
     bool pastEnd = false;
-    bool played = false;
     std::array<std::array<float, 4>, NGS2_MAX_CHANNELS> history{};
     std::deque<Ngs2Block> blocks;
-    std::deque<Ngs2Block> waveform;
     bool acceptsBlocks = true;
     std::uint64_t decodedSamples = 0;
     std::uint64_t decodedBytes = 0;

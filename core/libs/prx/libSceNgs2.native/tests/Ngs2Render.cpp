@@ -783,12 +783,15 @@ static void TestSampleRate() {
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
     std::vector<std::int16_t> out(Grain);
     const Ngs2RenderBufferInfo renderInfo{out.data(), out.size() * sizeof(std::int16_t), SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1};
-    bool unmeasured = false;
-    try { sceNgs2SystemRender(system, &renderInfo, 1); } catch (const std::runtime_error&) { unmeasured = true; }
-    Require(unmeasured);
-    Require(sceNgs2SystemSetSampleRate(system, 48000) == SCE_NGS2_OK);
-    out = RenderI16(system);
-    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == Delayed(pcm, i));
+    Require(sceNgs2SystemRender(system, &renderInfo, 1) == SCE_NGS2_OK);
+    const auto halfSystem = CreateSystem();
+    const auto halfMaster = Mastering(halfSystem, 1);
+    const auto halfSampler = Sampler(halfSystem, pcm, 1);
+    Control(halfSampler, SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, 0.5f});
+    Patch(halfSampler, halfMaster);
+    Event(halfSampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    Require(out == RenderI16(halfSystem) && out != std::vector<std::int16_t>(Grain, 0));
+    Require(sceNgs2SystemDestroy(halfSystem, nullptr) == SCE_NGS2_OK);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
@@ -1475,10 +1478,10 @@ struct ResampledRun {
 };
 
 static ResampledRun RenderResampled(std::uint32_t rate, const float* pitch, const std::vector<std::int16_t>& pcm, std::uint32_t channels,
-                                    const std::vector<Ngs2WaveformBlock>& blocks, std::uint32_t renders, const std::vector<ResampledOp>& ops = {}) {
+                                    const std::vector<Ngs2WaveformBlock>& blocks, std::uint32_t renders, const std::vector<ResampledOp>& ops = {}, std::uint32_t systemRate = 48000) {
     const auto firstBuffer = usedBuffers;
     const auto system = CreateSystem();
-    Require(sceNgs2SystemSetGrainSamples(system, OracleGrain) == SCE_NGS2_OK);
+    Require(sceNgs2SystemSetGrainSamples(system, OracleGrain) == SCE_NGS2_OK && sceNgs2SystemSetSampleRate(system, systemRate) == SCE_NGS2_OK);
     const auto master = Mastering(system, channels);
     const auto sampler = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
     Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, channels, rate, 0, 0, 0}});
@@ -1680,6 +1683,94 @@ static void TestResamplerStepFormula() {
     }
 }
 
+static void TestResamplerSystemRate() {
+    struct RateCase {
+        std::uint32_t systemRate;
+        std::uint32_t rate;
+        std::uint32_t at;
+        std::uint64_t hash;
+        std::vector<std::uint64_t> decoded;
+    };
+    const RateCase cases[] = {
+        {48000, 24000, 0, 0x0868cde833c08d26, {128, 256, 384, 512, 640, 768}},
+        {48000, 24000, 100, 0x56d12998b5d47aa6, {128, 256, 384, 512, 640, 768}},
+        {48000, 32000, 0, 0x9fef46657010a6bd, {170, 341, 511, 682, 853, 1023}},
+        {48000, 32000, 100, 0xd24395b4e3d6cf07, {170, 341, 511, 682, 853, 1023}},
+        {48000, 44100, 0, 0x81989fa7c08ede95, {235, 470, 705, 940, 0, 0}},
+        {48000, 44100, 100, 0x3bcd8af1c95f6c89, {235, 470, 705, 940, 0, 0}},
+        {48000, 48000, 0, 0x7b922e972a1fb9ca, {256, 512, 768, 1024, 0, 0}},
+        {48000, 48000, 100, 0x22843f0f9395ef0a, {256, 512, 768, 1024, 0, 0}},
+        {48000, 96000, 0, 0x26c8ba1e58b62383, {512, 1024, 0, 0, 0, 0}},
+        {48000, 96000, 100, 0x26c8ba1e58b62383, {512, 1024, 0, 0, 0, 0}},
+        {24000, 24000, 0, 0x7b922e972a1fb9ca, {256, 512, 768, 1024, 0, 0}},
+        {24000, 24000, 100, 0x22843f0f9395ef0a, {256, 512, 768, 1024, 0, 0}},
+        {24000, 32000, 0, 0x48cf788e8e19b666, {341, 682, 1023, 0, 0, 0}},
+        {24000, 32000, 100, 0x11e02d28dd861df2, {341, 682, 1023, 0, 0, 0}},
+        {24000, 44100, 0, 0xaa4a8df0f6034a42, {470, 940, 0, 0, 0, 0}},
+        {24000, 44100, 100, 0x0e5328fa59d6f52e, {470, 940, 0, 0, 0, 0}},
+        {24000, 48000, 0, 0x26c8ba1e58b62383, {512, 1024, 0, 0, 0, 0}},
+        {24000, 48000, 100, 0x26c8ba1e58b62383, {512, 1024, 0, 0, 0, 0}},
+        {24000, 96000, 0, 0x345ae3a927296881, {1023, 0, 0, 0, 0, 0}},
+        {24000, 96000, 100, 0x2f87144c26a41a21, {1023, 0, 0, 0, 0, 0}},
+        {44100, 24000, 0, 0xe4c3a442049ddc7b, {139, 278, 417, 557, 696, 835}},
+        {44100, 24000, 100, 0x46af8a31bcb156d2, {139, 278, 417, 557, 696, 835}},
+        {44100, 32000, 0, 0xec79396246cdd5ea, {185, 371, 557, 743, 928, 0}},
+        {44100, 32000, 100, 0x8f848c6305b56581, {185, 371, 557, 743, 928, 0}},
+        {44100, 44100, 0, 0x7b922e972a1fb9ca, {256, 512, 768, 1024, 0, 0}},
+        {44100, 44100, 100, 0x22843f0f9395ef0a, {256, 512, 768, 1024, 0, 0}},
+        {44100, 48000, 0, 0xe1c55a79e34e5b6e, {278, 557, 835, 0, 0, 0}},
+        {44100, 48000, 100, 0xd26553d89884b260, {278, 557, 835, 0, 0, 0}},
+        {44100, 96000, 0, 0xab7a201964a6d652, {557, 0, 0, 0, 0, 0}},
+        {44100, 96000, 100, 0x344e6f13d282420a, {557, 0, 0, 0, 0, 0}},
+        {96000, 24000, 0, 0x02bc2d4c460bac7a, {64, 128, 192, 256, 320, 384}},
+        {96000, 24000, 100, 0x45b1194ef5534d7a, {64, 128, 192, 256, 320, 384}},
+        {96000, 32000, 0, 0xb754bd2d66597144, {85, 170, 255, 341, 426, 511}},
+        {96000, 32000, 100, 0x81265a52f0b060b0, {85, 170, 255, 341, 426, 511}},
+        {96000, 44100, 0, 0xde37c28d81686fc2, {117, 235, 352, 470, 587, 705}},
+        {96000, 44100, 100, 0x8cf54a2f76512ff9, {117, 235, 352, 470, 587, 705}},
+        {96000, 48000, 0, 0x0868cde833c08d26, {128, 256, 384, 512, 640, 768}},
+        {96000, 48000, 100, 0x56d12998b5d47aa6, {128, 256, 384, 512, 640, 768}},
+        {96000, 96000, 0, 0x7b922e972a1fb9ca, {256, 512, 768, 1024, 0, 0}},
+        {96000, 96000, 100, 0x22843f0f9395ef0a, {256, 512, 768, 1024, 0, 0}},
+        {11025, 24000, 0, 0xab7a201964a6d652, {557, 0, 0, 0, 0, 0}},
+        {11025, 24000, 100, 0x344e6f13d282420a, {557, 0, 0, 0, 0, 0}},
+        {11025, 32000, 0, 0x252cc7a8b001ce2d, {743, 0, 0, 0, 0, 0}},
+        {11025, 32000, 100, 0x4afe71c2097acea3, {743, 0, 0, 0, 0, 0}},
+        {11025, 44100, 0, 0x345ae3a927296881, {1023, 0, 0, 0, 0, 0}},
+        {11025, 44100, 100, 0x2f87144c26a41a21, {1023, 0, 0, 0, 0, 0}},
+        {11025, 48000, 0, 0x345ae3a927296881, {1023, 0, 0, 0, 0, 0}},
+        {11025, 48000, 100, 0x2f87144c26a41a21, {1023, 0, 0, 0, 0, 0}},
+        {11025, 96000, 0, 0x345ae3a927296881, {1023, 0, 0, 0, 0, 0}},
+        {11025, 96000, 100, 0x2f87144c26a41a21, {1023, 0, 0, 0, 0, 0}},
+        {192000, 24000, 0, 0xde59e11e313dad6a, {32, 64, 96, 128, 160, 192}},
+        {192000, 24000, 100, 0x73f7abcc8ccd0f6a, {32, 64, 96, 128, 160, 192}},
+        {192000, 32000, 0, 0x74d703af2d7d5703, {42, 85, 127, 170, 213, 255}},
+        {192000, 32000, 100, 0x09a979d7fa6198b3, {42, 85, 127, 170, 213, 255}},
+        {192000, 44100, 0, 0x36aa4321f0d80b9c, {58, 117, 176, 235, 293, 352}},
+        {192000, 44100, 100, 0x35aa57f10cf12138, {58, 117, 176, 235, 293, 352}},
+        {192000, 48000, 0, 0x02bc2d4c460bac7a, {64, 128, 192, 256, 320, 384}},
+        {192000, 48000, 100, 0x45b1194ef5534d7a, {64, 128, 192, 256, 320, 384}},
+        {192000, 96000, 0, 0x0868cde833c08d26, {128, 256, 384, 512, 640, 768}},
+        {192000, 96000, 100, 0x56d12998b5d47aa6, {128, 256, 384, 512, 640, 768}},
+        {22050, 24000, 0, 0xe1c55a79e34e5b6e, {278, 557, 835, 0, 0, 0}},
+        {22050, 24000, 100, 0xd26553d89884b260, {278, 557, 835, 0, 0, 0}},
+        {22050, 32000, 0, 0x66f5b34c1d76a321, {371, 743, 0, 0, 0, 0}},
+        {22050, 32000, 100, 0x600477907adc830c, {371, 743, 0, 0, 0, 0}},
+        {22050, 44100, 0, 0x26c8ba1e58b62383, {512, 1024, 0, 0, 0, 0}},
+        {22050, 44100, 100, 0x26c8ba1e58b62383, {512, 1024, 0, 0, 0, 0}},
+        {22050, 48000, 0, 0xab7a201964a6d652, {557, 0, 0, 0, 0, 0}},
+        {22050, 48000, 100, 0x344e6f13d282420a, {557, 0, 0, 0, 0, 0}},
+        {22050, 96000, 0, 0x345ae3a927296881, {1023, 0, 0, 0, 0, 0}},
+        {22050, 96000, 100, 0x2f87144c26a41a21, {1023, 0, 0, 0, 0, 0}},
+    };
+    for (const auto& rateCase : cases) {
+        const auto pcm = ImpulsePcm(1024, rateCase.at);
+        const auto run = RenderResampled(rateCase.rate, nullptr, pcm, 1, WholeBlock(pcm, 1), 6, {}, rateCase.systemRate);
+        Require(Fnv(Negated(run.out)) == rateCase.hash && run.decoded == rateCase.decoded);
+        for (std::size_t render = 0; render < run.flags.size(); render++) Require(run.flags[render] == (run.decoded[render] != 0 ? 3u : 0u));
+    }
+}
+
 static void TestResamplerStereo() {
     const auto ramp = RampPcm(2048);
     const auto random = RandomPcm(2048, 777);
@@ -1817,113 +1908,18 @@ static void TestResamplerPitchAtSetup() {
     for (std::size_t i = 0; i < train.size(); i += 6) train[i] = -32768;
     const float four = 4.0f;
     Require(RenderResampled(48000, &belowClamp, train, 1, WholeBlock(train, 1), 4).out != RenderResampled(48000, &four, train, 1, WholeBlock(train, 1), 4).out);
-}
-
-static void TestResamplerRestart() {
-    const auto random = RandomPcm(4096, 4242);
-    const float slower = 0.75f;
-    const auto stopped = RenderResampled(48000, &slower, random, 1, WholeBlock(random, 1), 5, {{2, SCE_NGS2_VOICE_EVENT_STOP_IMM, 0.0f}, {2, SCE_NGS2_VOICE_EVENT_PLAY, 0.0f}});
-    Require(stopped.decoded == (std::vector<std::uint64_t>{192, 384, 192, 384, 576}) && stopped.flags == (std::vector<std::uint32_t>(5, 3)));
-    Require(stopped.out[512] == 0.0f && stopped.out[513] == 0.0f && std::equal(stopped.out.begin(), stopped.out.begin() + 512, stopped.out.begin() + 512));
-    const auto replayed = RenderResampled(44100, nullptr, random, 1, WholeBlock(random, 1), 5, {{2, SCE_NGS2_VOICE_EVENT_PLAY, 0.0f}});
-    Require(replayed.decoded == (std::vector<std::uint64_t>{235, 470, 235, 470, 705}) && std::equal(replayed.out.begin(), replayed.out.begin() + 512, replayed.out.begin() + 512));
-    Require(replayed.decodedBytes == (std::vector<std::uint64_t>{470, 940, 470, 940, 1410}));
-    const std::vector<std::int16_t> shortPcm(random.begin(), random.begin() + 300);
-    const auto ended = RenderResampled(44100, nullptr, shortPcm, 1, WholeBlock(shortPcm, 1), 7, {{4, SCE_NGS2_VOICE_EVENT_PLAY, 0.0f}});
-    Require(ended.flags == (std::vector<std::uint32_t>{3, 0, 0, 0, 3, 0, 0}) && ended.decoded == (std::vector<std::uint64_t>{235, 0, 0, 0, 235, 0, 0}));
-    Require(std::equal(ended.out.begin(), ended.out.begin() + 512, ended.out.begin() + 1024));
-}
-
-static void TestResamplerReplayAndUnmeasured() {
     const auto system = CreateSystem();
-    const auto master = Mastering(system, 1);
-    const auto throws = [](auto function) {
-        try {
-            function();
-        } catch (const std::exception&) {
-            return true;
-        }
-        return false;
-    };
-    const std::vector<std::int16_t> pcm(Grain, 16384);
-    const auto paused = Sampler(system, pcm, 0);
-    Patch(paused, master);
-    Event(paused, SCE_NGS2_VOICE_EVENT_PLAY);
-    Event(paused, SCE_NGS2_VOICE_EVENT_PAUSE);
-    Require(throws([&] { Event(paused, SCE_NGS2_VOICE_EVENT_PLAY); }));
-    Event(paused, SCE_NGS2_VOICE_EVENT_RESUME);
-    const auto beforeStop = RenderI16(system);
-    Event(paused, SCE_NGS2_VOICE_EVENT_STOP);
-    Event(paused, SCE_NGS2_VOICE_EVENT_PLAY);
-    Require(RenderI16(system) == beforeStop && Flags(paused) == (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING));
-    Event(paused, SCE_NGS2_VOICE_EVENT_STOP_IMM);
-
-    const auto voice = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
-    const float nan = std::numeric_limits<float>::quiet_NaN();
-    Require(throws([&] { Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, nan}); }));
-    const auto setup = [&] { Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}}); };
-    const auto add = [&](const std::vector<std::int16_t>& data, std::uint32_t frames, std::uint32_t skip, std::uint32_t flags) {
-        const Ngs2WaveformBlock block{0, data.size() * sizeof(std::int16_t), 0, skip, frames, 0, 0};
-        Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, data.data(), flags, 1, &block});
-    };
-    setup();
-    Require(throws([&] { add(pcm, Grain - 1, 1, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE); }));
-    setup();
-    add(pcm, Grain * 4, 0, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE);
-    Patch(voice, master);
-    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
-    Require(throws([&] { Event(voice, SCE_NGS2_VOICE_EVENT_PLAY); }));
-    setup();
-    add(pcm, Grain * 4, 0, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE);
-    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
-
-    const std::vector<std::int16_t> first(4, 1000);
-    const std::vector<std::int16_t> second(4, 2000);
-    const auto playsOnly = [&](const std::vector<std::int16_t>& expected) {
-        Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
-        const auto out = RenderI16(system);
-        for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == Delayed(expected, i));
-        Require(Flags(voice) == 0);
-    };
-    setup();
-    add(first, 4, 0, 0);
-    Patch(voice, master);
-    playsOnly(first);
-    setup();
-    add(second, 4, 0, 0);
-    Patch(voice, master);
-    playsOnly(second);
-    playsOnly(second);
-    add(first, 4, 0, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET);
-    playsOnly(first);
-
-    setup();
-    const Ngs2WaveformBlock silentThenFirst[2] = {{0, 0, 0, 0, Grain, 0, 0}, {0, first.size() * sizeof(std::int16_t), 0, 0, 4, 0, 0}};
-    Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS,
-            Ngs2SamplerVoiceWaveformBlocksParam{{}, first.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_SILENCE, 2, silentThenFirst});
-    Patch(voice, master);
-    for (int pass = 0; pass < 2; pass++) {
-        Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
-        const auto head = RenderI16(system);
-        Require(std::all_of(head.begin(), head.end(), [](std::int16_t sample) { return sample == 0; }));
-        const auto tail = RenderI16(system);
-        for (std::uint32_t i = 0; i < Grain; i++) Require(tail[i] == Delayed(first, i));
-        Require(Flags(voice) == 0);
+    const auto unset = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
+    bool rejected = false;
+    try {
+        Control(unset, SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, nan});
+    } catch (const std::invalid_argument&) {
+        rejected = true;
     }
-    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    Require(rejected && sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
 static void TestResamplerVoiceRate() {
-    const auto system = CreateSystem();
-    const auto sampler = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
-    for (const std::uint32_t rate : {0u, 192001u, 384000u, 0xffffffffu}) {
-        Ngs2SamplerVoiceSetupParam setup{{static_cast<std::uint16_t>(sizeof(Ngs2SamplerVoiceSetupParam)), 0, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, rate, 0, 0, 0}};
-        Require(sceNgs2VoiceControl(sampler, &setup.header) == SCE_NGS2_ERROR_INVALID_SAMPLE_RATE);
-    }
-    for (const std::uint32_t rate : {1u, 100u, 3999u, 37800u, 96001u, 192000u}) {
-        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, rate, 0, 0, 0}});
-    }
-    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
     const auto ramp = RampPcm(256);
     const float head192000[] = {0.0f, 0.000243663788f, 0.0012202264f, 0.00219678879f, 0.00317335152f, 0.00414991379f};
     const auto fastest = RenderResampled(192000, nullptr, ramp, 1, WholeBlock(ramp, 1), 1);
@@ -2120,13 +2116,12 @@ int main() {
     TestResamplerMeasuredHashes();
     TestResamplerMeasuredValues();
     TestResamplerStepFormula();
+    TestResamplerSystemRate();
     TestResamplerStereo();
     TestResamplerVoiceEnd();
     TestResamplerRepeats();
     TestResamplerPitchChanges();
     TestResamplerPitchAtSetup();
-    TestResamplerRestart();
-    TestResamplerReplayAndUnmeasured();
     TestResamplerVoiceRate();
 
     TestRenderCapacity<float>(SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 1);

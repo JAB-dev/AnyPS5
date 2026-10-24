@@ -17,7 +17,6 @@ static constexpr std::uint64_t POSITION_FRACTION = (std::uint64_t{1} << POSITION
 static constexpr std::uint32_t MAX_STEP = 65535;
 static constexpr std::uint32_t PHASE_BITS = 9;
 static constexpr std::uint32_t KERNEL_PHASES = 1u << PHASE_BITS;
-static constexpr std::uint32_t MEASURED_SYSTEM_RATE = 48000;
 
 static const std::uint8_t* FrameAt(const Ngs2Voice& voice, const Ngs2Block& block, std::uint32_t frame) {
     const std::size_t frameBytes = voice.channels * sizeof(std::int16_t);
@@ -70,10 +69,9 @@ static float Resample(const float* history, const float* kernel, std::uint32_t p
     return (a + b) + (c + d);
 }
 
-static std::uint32_t SamplerStep(const Ngs2Voice& voice) {
-    const float position = voice.pitch * (static_cast<float>(voice.sampleRate) / static_cast<float>(MEASURED_SYSTEM_RATE)) * static_cast<float>(1u << POSITION_BITS);
-    if (!(position > 0.0f)) return 0;
-    return position >= static_cast<float>(MAX_STEP) ? MAX_STEP : static_cast<std::uint32_t>(position);
+static std::uint32_t SamplerStep(const Ngs2Voice& voice, std::uint32_t systemRate) {
+    const float position = voice.pitch * (static_cast<float>(voice.sampleRate) / static_cast<float>(systemRate)) * static_cast<float>(1u << POSITION_BITS);
+    return static_cast<std::uint32_t>(std::fmin(std::fmax(position, 0.0f), static_cast<float>(MAX_STEP)));
 }
 
 static void Push(Ngs2Voice& voice, const std::uint8_t* frame) {
@@ -150,9 +148,8 @@ static bool Fetch(Ngs2Voice& voice) {
 }
 
 static void ConsumeSamples(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t systemRate) {
-    if (systemRate != MEASURED_SYSTEM_RATE) throw std::runtime_error("NGS2: PCM sampler voices on a " + std::to_string(systemRate) + " Hz system are not implemented");
     const auto revision = voice.waveformRevision;
-    const auto step = SamplerStep(voice);
+    const auto step = SamplerStep(voice, systemRate);
     const float* kernel = Kernel();
     std::uint32_t written = 0;
     for (; written < grain && voice.state == Ngs2PlayState::Playing && voice.waveformRevision == revision; written++) {
@@ -215,7 +212,8 @@ static void RenderSampler(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t s
     const bool ended = atrac9 ? voice.blocks.empty() && voice.atrac9.windowCursor * voice.channels >= voice.atrac9.window.size() && !voice.acceptsBlocks : voice.pastEnd;
     if (voice.state == Ngs2PlayState::Playing && ended && std::none_of(voice.filters.begin(), voice.filters.end(), HasHistory)) {
         voice.state = Ngs2PlayState::Empty;
-        if (!atrac9) voice.decodedSamples = 0;
+        if (!atrac9) voice.ResetPosition();
+        if (voice.rack->rackId == SCE_NGS2_RACK_ID_SAMPLER && !atrac9) voice.decodedSamples = 0;
     }
 }
 

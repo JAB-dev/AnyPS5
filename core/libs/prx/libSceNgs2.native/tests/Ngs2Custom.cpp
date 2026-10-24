@@ -274,13 +274,17 @@ static void TestCustomSampler() {
     std::vector<std::int16_t> pcm(Grain * 2 * 4, 16384);
     const Ngs2WaveformBlock block{0, pcm.size() * sizeof(std::int16_t), 1, 0, static_cast<std::uint32_t>(pcm.size() / 2), 0, 0};
     Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &block});
-    Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, 1.0f});
-    Require(ControlThrows<std::invalid_argument>(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, std::numeric_limits<float>::quiet_NaN()}));
+    Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, std::numeric_limits<float>::quiet_NaN()});
     const Ngs2VoiceParamHeader exitLoop{sizeof(Ngs2VoiceParamHeader), 0, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_EXIT_LOOP};
     Require(sceNgs2VoiceControl(voice, &exitLoop) == SCE_NGS2_OK);
     Patch(voice, master);
     Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
 
+    const auto frozen = Render(system);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(frozen[i * 2] == 0.0f && frozen[i * 2 + 1] == 0.25f);
+    Ngs2CustomSamplerVoiceState frozenState{};
+    Require(sceNgs2VoiceGetState(voice, &frozenState.voice_state, sizeof(frozenState)) == SCE_NGS2_OK && frozenState.num_decoded_samples == 0);
+    Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, 1.0f});
     const auto out = Render(system);
     for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == (i < 3 ? 0.0f : 0.5f) && out[i * 2 + 1] == (i < 3 ? 0.25f : 0.75f));
 
