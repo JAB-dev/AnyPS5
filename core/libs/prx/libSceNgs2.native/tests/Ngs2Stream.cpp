@@ -71,7 +71,7 @@ static void TestStreamEndsAtDeclaredSamples() {
     RenderI16(system);
     Require(Flags(voice) == 0);
     Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
-    Require(state.num_decoded_samples == 0 && state.decoded_data_size == 0 && state.waveform_data == last.data() + 6);
+    Require(state.num_decoded_samples == 0 && state.decoded_data_size == 0 && state.waveform_data == nullptr);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 

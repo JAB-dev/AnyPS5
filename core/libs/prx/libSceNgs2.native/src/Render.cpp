@@ -216,6 +216,7 @@ static void RenderSampler(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t s
         if (!atrac9) voice.ResetPosition();
         if (voice.rack->rackId == SCE_NGS2_RACK_ID_SAMPLER && !atrac9) voice.decodedSamples = 0;
         if (!atrac9) voice.decodedBytes = 0;
+        if (!atrac9) voice.waveformEnd = nullptr;
     }
 }
 

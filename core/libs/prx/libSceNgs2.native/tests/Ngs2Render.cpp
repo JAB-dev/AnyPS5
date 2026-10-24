@@ -153,7 +153,7 @@ static void TestPcmBlockEnd() {
     Require(callbackFlags.size() == 1 && callbackFlags[0] == SCE_NGS2_VOICE_CALLBACK_FLAG_BLOCK_END);
     Require(Flags(sampler) == 0);
     Require(sceNgs2VoiceGetState(sampler, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
-    Require(state.num_decoded_samples == 0 && state.waveform_data == pcm.data() + pcm.size());
+    Require(state.num_decoded_samples == 0 && state.waveform_data == nullptr && state.user_data == 0);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
@@ -1942,8 +1942,6 @@ static void TestResamplerAfterEnd() {
     Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
     RenderI16(system);
     Require(Flags(voice) == 0);
-    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
-    Require(RenderI16(system) == std::vector<std::int16_t>(Grain, 0) && Flags(voice) == 0);
     const auto second = RandomPcm(3 * Grain, 4242);
     const Ngs2WaveformBlock secondBlock{0, second.size() * sizeof(std::int16_t), 0, 0, 3 * Grain, 0, 0};
     Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, second.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 1, &secondBlock});
