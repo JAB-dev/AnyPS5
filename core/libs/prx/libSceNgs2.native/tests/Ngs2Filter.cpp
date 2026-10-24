@@ -620,7 +620,7 @@ static Ngs2CustomVoiceFilterParam CustomFilter(const Ngs2SamplerVoiceFilterParam
     return param;
 }
 
-static uintptr_t CustomFilterVoice(uintptr_t system) {
+static uintptr_t CustomFilterVoice(uintptr_t system, std::uint32_t modules = 1) {
     Ngs2CustomSamplerRackOption option{};
     option.custom_rack_option.rack_option.size = sizeof(option);
     option.custom_rack_option.rack_option.max_grain_samples = 512;
@@ -628,8 +628,8 @@ static uintptr_t CustomFilterVoice(uintptr_t system) {
     option.custom_rack_option.rack_option.max_matrices = 1;
     option.custom_rack_option.rack_option.max_ports = 1;
     option.custom_rack_option.num_buffers = 1;
-    option.custom_rack_option.num_modules = 1;
-    option.custom_rack_option.module[0].module_id = SCE_NGS2_CUSTOM_MODULE_ID_FILTER;
+    option.custom_rack_option.num_modules = modules;
+    for (std::uint32_t m = 0; m < modules; m++) option.custom_rack_option.module[m].module_id = SCE_NGS2_CUSTOM_MODULE_ID_FILTER;
     option.max_channel_works = 1;
     Ngs2ContextBufferInfo query{};
     Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_CUSTOM_SAMPLER, &option.custom_rack_option.rack_option, &query) == SCE_NGS2_OK);
@@ -802,6 +802,38 @@ static void TestDeadCellsOnePoleOnCustomRack() {
     }
 }
 
+static void TestInfiniteInputPoisonsEarlierFramesOfItsBlock() {
+    std::vector<std::int16_t> pcm(2 * Grain, 0);
+    pcm[5] = 24576;
+    pcm[6] = 24576;
+    pcm[7] = -24576;
+    std::vector<float> input(pcm.size());
+    for (std::size_t n = 0; n < input.size(); n++) input[n] = pcm[n] / 32768.0f;
+    const float max = std::numeric_limits<float>::max();
+    const Coefficients overflow = {max, max, 0.0f, 0.0f, 0.0f};
+    const auto first = BlockModel(input, overflow);
+    Require(std::isinf(first[6]) && std::isfinite(first[7]));
+    const auto expected = BlockModel(first, overflow);
+    Require(std::isnan(expected[4]) && std::isnan(expected[5]));
+
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 1);
+    const auto voice = CustomFilterVoice(system, 2);
+    Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}});
+    const Ngs2WaveformBlock block{0, pcm.size() * sizeof(std::int16_t), 0, 0, static_cast<std::uint32_t>(pcm.size()), 0, 0};
+    Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &block});
+    for (std::uint32_t index : {0u, 1u}) {
+        auto param = CustomFilter(Direct(overflow));
+        param.header.id = SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER | index;
+        Require(sceNgs2VoiceControl(voice, &param.header) == SCE_NGS2_OK);
+    }
+    Patch(voice, master);
+    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
+    const auto out = RenderGrains(system, 2);
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    Require(SameBits(out, expected));
+}
+
 struct ClampCase {
     std::uint32_t type;
     std::uint32_t lowLast;
@@ -917,6 +949,7 @@ int main() {
     TestEveryTypeMatchesBlockModelOnNoise();
     TestDirectCoefficientsRunInBlocksOfFour();
     TestDeadCellsOnePoleOnCustomRack();
+    TestInfiniteInputPoisonsEarlierFramesOfItsBlock();
     TestEveryTypeClamps();
     TestInvalidTypesLeaveOutputUnfiltered();
     TestEveryTypeRestartsWithZeroHistory();
