@@ -319,10 +319,6 @@ static void TestUnmeasuredFilterCasesThrow() {
     const auto master = Mastering(system, 1);
     const auto pcm = Impulse(Grain);
     const auto sampler = Sampler(system, pcm, 1, 48000);
-    for (const auto& param : {Filter(8, 10, 1, 0, 1000.0f, Q, 1.0f), Filter(0, 10, 12, 0, 1000.0f, Q, 1.0f)}) {
-        Require(ThrowsRuntimeError([&] { sceNgs2VoiceControl(sampler, &param.header); }));
-    }
-
     Patch(sampler, master);
     Control(sampler, SCE_NGS2_VOICE_PARAM_PATCH, Ngs2VoicePatchParam{{}, 1, 0, master});
     SetFilter(sampler, Filter(0, 2, 1, 0, 1000.0f, Q, 1.0f));
@@ -899,33 +895,195 @@ static void TestEveryTypeRestartsWithZeroHistory() {
     }
 }
 
-static void TestUnestablishedBlockLayoutsThrow() {
-    std::vector<std::int16_t> stereo(4 * Grain, 0);
-    stereo[0] = 16384;
-    stereo[1] = 16384;
-    const auto render = [&stereo](const Ngs2SamplerVoiceFilterParam& filter, std::uint32_t grain) {
+static void TestGrainNotMultipleOfFourThrows() {
+    std::vector<std::int16_t> pcm(4 * Grain, 0);
+    pcm[0] = 16384;
+    const auto render = [&pcm](const Ngs2SamplerVoiceFilterParam& filter, std::uint32_t grain) {
         const auto system = CreateSystem();
         Require(sceNgs2SystemSetGrainSamples(system, grain) == SCE_NGS2_OK);
-        const auto master = Mastering(system, 2);
-        const auto sampler = Sampler(system, stereo, 2, 48000);
+        const auto master = Mastering(system, 1);
+        const auto sampler = Sampler(system, pcm, 1, 48000);
         Patch(sampler, master);
         SetFilter(sampler, filter);
         Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
-        std::vector<float> out(2 * grain);
-        const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 2};
+        std::vector<float> out(grain);
+        const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 1};
         const bool threw = ThrowsRuntimeError([&] { sceNgs2SystemRender(system, &info, 1); });
         Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
         return threw;
     };
-    for (std::uint32_t type : {2u, 9u, 11u}) {
-        Require(render(Filter(0, 1, type, 1, 1000.0f, Q, 1.0f), Grain));
-        Require(render(Filter(0, 1, type, 2, 1000.0f, Q, 1.0f), Grain));
-        for (std::uint64_t mask : {0ull, 3ull, 0xffull}) Require(!render(Filter(0, 1, type, mask, 1000.0f, Q, 1.0f), Grain));
-    }
-    Require(!render(Filter(0, 1, 1, 1, 1000.0f, Q, 1.0f), Grain));
     Require(render(Filter(0, 1, 1, 0, 1000.0f, Q, 1.0f), 6));
+    Require(render(Filter(0, 1, 9, 0, 1000.0f, Q, 1.0f), 10));
     Require(!render(Filter(0, 1, 0, 0, 1000.0f, Q, 1.0f), 6));
     Require(!render(Filter(0, 1, 1, 0, 1000.0f, Q, 1.0f), 12));
+}
+
+static std::vector<float> MultiChannelOutput(std::uint32_t channels, const Ngs2SamplerVoiceFilterParam* filter) {
+    std::vector<std::int16_t> pcm(4 * Grain * channels, 0);
+    for (std::uint32_t c = 0; c < channels; c++) pcm[(1 + 3 * c) * channels + c] = 16384;
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, channels);
+    const auto sampler = Sampler(system, pcm, channels, 48000);
+    Patch(sampler, master);
+    if (filter != nullptr) SetFilter(sampler, *filter);
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    std::vector<float> out;
+    for (int r = 0; r < 4; r++) {
+        const auto grain = RenderGrain(system, channels);
+        out.insert(out.end(), grain.begin(), grain.end());
+    }
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    return out;
+}
+
+static bool SameChannel(const std::vector<float>& a, const std::vector<float>& b, std::uint32_t channels, std::uint32_t channel) {
+    for (std::size_t i = channel; i < a.size(); i += channels) {
+        if (std::bit_cast<std::uint32_t>(a[i]) != std::bit_cast<std::uint32_t>(b[i])) return false;
+    }
+    return true;
+}
+
+static void TestPartialMasksBypassTheirChannels() {
+    for (std::uint32_t channels : {2u, 6u}) {
+        const auto unfiltered = MultiChannelOutput(channels, nullptr);
+        for (std::uint32_t type : {1u, 2u, 9u, 11u}) {
+            const auto make = [type](std::uint64_t mask) {
+                auto param = type == 11 ? Direct({0.3f, -0.41f, 0.17f, 1.2f, -0.5f}) : Filter(0, 1, type, 0, 1000.0f, Q, 1.0f);
+                std::memcpy(reinterpret_cast<std::uint8_t*>(&param) + 0x10, &mask, sizeof(mask));
+                return param;
+            };
+            const auto all = make(0);
+            const auto filtered = MultiChannelOutput(channels, &all);
+            for (std::uint64_t mask : {0x1ull, 0x2ull, 0x3ull, 0x5ull, 0x3full, 0xffull}) {
+                const auto param = make(mask);
+                const auto out = MultiChannelOutput(channels, &param);
+                for (std::uint32_t c = 0; c < channels; c++) {
+                    Require(!SameChannel(filtered, unfiltered, channels, c));
+                    Require(SameChannel(out, (mask >> c) & 1 ? unfiltered : filtered, channels, c));
+                }
+            }
+        }
+    }
+}
+
+static void TestFilterErrorOrder() {
+    const auto pcm = Impulse(Grain);
+    const auto system = CreateSystem();
+    const auto sampler = Sampler(system, pcm, 1, 48000);
+    for (std::uint32_t bad = 1; bad < 16; bad++) {
+        auto param = Filter(bad & 1 ? 8 : 0, bad & 2 ? 18 : 1, bad & 4 ? 12 : 1, 0, 1000.0f, Q, 1.0f);
+        if (bad & 8) param.header.size = 0x30;
+        const int expected = bad & 8   ? SCE_NGS2_ERROR_INVALID_VOICE_CONTROL_SIZE
+                             : bad & 1 ? SCE_NGS2_ERROR_INVALID_VOICE_PARAM_ID
+                             : bad & 4 ? SCE_NGS2_ERROR_INVALID_FILTER_TYPE
+                                       : SCE_NGS2_ERROR_INVALID_MODULE_LOCATION;
+        Require(sceNgs2VoiceControl(sampler, &param.header) == expected);
+    }
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+}
+
+struct ParamList {
+    Ngs2VoicePortVolumeParam volume;
+    Ngs2SamplerVoiceFilterParam filter;
+    Ngs2SamplerVoicePitchParam pitch;
+};
+
+static void TestRejectedFilterStopsTheParamList() {
+    const auto pcm = Impulse(64 * Grain);
+    for (int position = 0; position < 3; position++) {
+        const auto system = CreateSystem();
+        const auto master = Mastering(system, 1);
+        const auto sampler = Sampler(system, pcm, 1, 48000);
+        Patch(sampler, master);
+        ParamList list{};
+        list.volume.header = {sizeof(list.volume), 0, SCE_NGS2_VOICE_PARAM_PORT_VOLUME};
+        list.volume.port = 0;
+        list.volume.level = 0.5f;
+        list.filter = Filter(0, 1, 12, 0, 1000.0f, Q, 1.0f);
+        list.pitch.header = {sizeof(list.pitch), 0, SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH};
+        list.pitch.ratio = 2.0f;
+        Ngs2VoiceParamHeader* order[3] = {&list.volume.header, &list.filter.header, &list.pitch.header};
+        if (position == 0) std::swap(order[0], order[1]);
+        if (position == 2) std::swap(order[1], order[2]);
+        for (int i = 0; i < 2; i++) {
+            order[i]->next = static_cast<std::int16_t>(reinterpret_cast<std::uint8_t*>(order[i + 1]) - reinterpret_cast<std::uint8_t*>(order[i]));
+        }
+        Require(sceNgs2VoiceControl(sampler, order[0]) == SCE_NGS2_ERROR_INVALID_FILTER_TYPE);
+        Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+        RenderGrain(system, 1);
+        Ngs2VoicePortInfo port{};
+        Require(sceNgs2VoiceGetPortInfo(sampler, 0, &port, sizeof(port)) == SCE_NGS2_OK);
+        Ngs2SamplerVoiceState state{};
+        Require(sceNgs2VoiceGetState(sampler, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
+        Require(port.volume == (position == 0 ? 1.0f : 0.5f));
+        Require(state.num_decoded_samples == (position == 2 ? 2 * Grain : Grain));
+        Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    }
+}
+
+template <typename TBetween>
+static std::vector<float> RampAroundEvent(const std::vector<std::int16_t>& ramp, TBetween between, float pitch = 1.0f) {
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 1);
+    const auto sampler = Sampler(system, ramp, 1, 48000);
+    Patch(sampler, master);
+    SetFilter(sampler, LOW_PASS);
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, pitch});
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    auto out = RenderGrains(system, 2);
+    between(system, sampler);
+    const auto next = RenderGrains(system, 2);
+    out.insert(out.end(), next.begin(), next.end());
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    return out;
+}
+
+static void PlayAgain(uintptr_t sampler) {
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    Require(Flags(sampler) == SCE_NGS2_VOICE_STATE_FLAG_INUSE);
+}
+
+static void TestPlayRestartsAPlayingOrPausedVoice() {
+    std::vector<std::int16_t> ramp(64 * Grain);
+    for (std::size_t n = 0; n < ramp.size(); n++) ramp[n] = static_cast<std::int16_t>(n * 37 % 30000);
+    const auto uninterrupted = RampAroundEvent(ramp, [](uintptr_t, uintptr_t) {});
+    std::vector<float> restarted(uninterrupted.begin(), uninterrupted.begin() + 2 * Grain);
+    restarted.insert(restarted.end(), uninterrupted.begin(), uninterrupted.begin() + 2 * Grain);
+    Require(!SameBits(uninterrupted, restarted));
+    Require(SameBits(RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) { PlayAgain(sampler); }), restarted));
+    Require(SameBits(RampAroundEvent(ramp,
+                                     [](uintptr_t system, uintptr_t sampler) {
+                                         Event(sampler, SCE_NGS2_VOICE_EVENT_PAUSE);
+                                         RenderGrains(system, 2);
+                                         PlayAgain(sampler);
+                                         Event(sampler, SCE_NGS2_VOICE_EVENT_RESUME);
+                                         Require(Flags(sampler) == SCE_NGS2_VOICE_STATE_FLAG_INUSE);
+                                     }),
+                     restarted));
+    const auto slow = RampAroundEvent(ramp, [](uintptr_t, uintptr_t) {}, 0.7f);
+    std::vector<float> slowRestarted(slow.begin(), slow.begin() + 2 * Grain);
+    slowRestarted.insert(slowRestarted.end(), slow.begin(), slow.begin() + 2 * Grain);
+    Require(SameBits(RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) { PlayAgain(sampler); }, 0.7f), slowRestarted));
+
+    const std::vector<std::int16_t> pcm(Grain, 1000);
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 1);
+    const auto sampler = Sampler(system, pcm, 1, 48000);
+    Patch(sampler, master);
+    const Ngs2WaveformBlock blocks[2] = {{0, pcm.size() * sizeof(std::int16_t), 0, 0, Grain / 2, 0, 0}, {0, pcm.size() * sizeof(std::int16_t), 0, 0, Grain, 0, 0}};
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 2, blocks});
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    RenderGrains(system, 1);
+    Require(ThrowsRuntimeError([&] { Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY); }));
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 1, &blocks[1]});
+    PlayAgain(sampler);
+    RenderGrains(system, 1);
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}});
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &blocks[1]});
+    Patch(sampler, master);
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    PlayAgain(sampler);
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
 int main() {
@@ -953,6 +1111,10 @@ int main() {
     TestEveryTypeClamps();
     TestInvalidTypesLeaveOutputUnfiltered();
     TestEveryTypeRestartsWithZeroHistory();
-    TestUnestablishedBlockLayoutsThrow();
+    TestGrainNotMultipleOfFourThrows();
+    TestPartialMasksBypassTheirChannels();
+    TestFilterErrorOrder();
+    TestRejectedFilterStopsTheParamList();
+    TestPlayRestartsAPlayingOrPausedVoice();
     return 0;
 }

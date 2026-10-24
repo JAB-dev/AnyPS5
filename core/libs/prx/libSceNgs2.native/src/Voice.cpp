@@ -28,6 +28,19 @@ struct Ngs2ReturnCode {
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
+            if (state == Ngs2PlayState::Playing || state == Ngs2PlayState::Paused) {
+                if (blocksFinished != 0 || blocks.empty() || blocks.front().streaming) {
+                    throw std::runtime_error("NGS2: PLAY on a playing or paused voice past its first block or on a streaming block is not implemented");
+                }
+                auto& block = blocks.front();
+                block.cursor = 0;
+                block.started = false;
+                block.dataCursor = 0;
+                phase = 0;
+                if (waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) Ngs2RestartAtrac9(*this);
+                stateFlags = 0;
+                state = Ngs2PlayState::Empty;
+            }
             if (state == Ngs2PlayState::Empty || state == Ngs2PlayState::Stopped) {
                 for (auto& filter : filters) std::fill(filter.history.begin(), filter.history.end(), Ngs2FilterHistory{});
                 state = Ngs2PlayState::Playing;
@@ -68,6 +81,7 @@ void Ngs2Voice::ResetSetup() {
     pitch = 1.0f;
     phase = 0;
     blocks.clear();
+    blocksFinished = 0;
     acceptsBlocks = true;
     decodedSamples = 0;
     decodedBytes = 0;
@@ -227,6 +241,7 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
     if (reset) {
         ++voice.waveformRevision;
         voice.blocks.clear();
+        voice.blocksFinished = 0;
         voice.phase = 0;
         voice.waveformEnd = nullptr;
         if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) Ngs2RestartAtrac9(voice);
@@ -322,10 +337,9 @@ void Ngs2SetFilter(Ngs2Voice& voice, const Ngs2SamplerVoiceFilterParam& param) {
     }
     const bool badLocation = param.location >= std::uint64_t{2} + voice.ports.size();
     const bool badType = param.type >= 12;
-    if (badIndex + badLocation + badType > 1) throw std::runtime_error("NGS2: a sampler filter param with more than one invalid field is not implemented");
     if (badIndex) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_PARAM_ID};
-    if (badLocation) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_MODULE_LOCATION};
     if (badType) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_FILTER_TYPE};
+    if (badLocation) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_MODULE_LOCATION};
     if (voice.filters.size() <= param.index) voice.filters.resize(param.index + 1);
     auto& filter = voice.filters[param.index];
     if (param.type == 0) {
@@ -334,7 +348,6 @@ void Ngs2SetFilter(Ngs2Voice& voice, const Ngs2SamplerVoiceFilterParam& param) {
     }
     const auto [i0, i1, i2, o1, o2] = FilterCoefficients(param, static_cast<float>(voice.rack->system->option.sample_rate));
     filter.enabled = true;
-    filter.type = param.type;
     filter.location = param.location;
     filter.bypassMask = param.channel_mask;
     filter.history.resize(voice.channels);

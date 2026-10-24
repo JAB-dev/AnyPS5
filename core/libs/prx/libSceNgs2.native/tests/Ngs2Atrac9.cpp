@@ -117,6 +117,17 @@ static void TestRepeatAndState(const std::vector<float>& reference) {
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
+static void TestPlayWhilePlayingRestartsTheBlock(const std::vector<float>& reference) {
+    const auto system = CreateSystem();
+    const auto sampler = Sampler(system, 100, 900, 0);
+    Patch(sampler, Mastering(system, 1));
+    Render(system, 200);
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    const auto rendered = Render(system, 512);
+    for (std::uint32_t i = 0; i < 512; i++) Require(rendered[i] == reference[100 + i]);
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+}
+
 static void Put16(std::vector<std::uint8_t>& out, std::uint32_t value) {
     out.push_back(static_cast<std::uint8_t>(value));
     out.push_back(static_cast<std::uint8_t>(value >> 8));
@@ -657,6 +668,7 @@ int main() {
     const auto reference = Reference();
     TestSkipAndBlockEnd(reference);
     TestRepeatAndState(reference);
+    TestPlayWhilePlayingRestartsTheBlock(reference);
     TestParse();
     TestParseLoops();
     TestMalformedLoops();

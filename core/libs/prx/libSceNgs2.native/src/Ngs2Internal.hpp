@@ -80,7 +80,6 @@ struct Ngs2FilterHistory {
 
 struct Ngs2Filter {
     bool enabled = false;
-    std::uint32_t type = 0;
     std::uint32_t location = 0;
     std::uint64_t bypassMask = 0;
     float h[4] = {};
@@ -127,6 +126,7 @@ struct Ngs2Voice {
     float pitch = 1.0f;
     std::uint64_t phase = 0;
     std::deque<Ngs2Block> blocks;
+    std::uint32_t blocksFinished = 0;
     bool acceptsBlocks = true;
     std::uint64_t decodedSamples = 0;
     std::uint64_t decodedBytes = 0;

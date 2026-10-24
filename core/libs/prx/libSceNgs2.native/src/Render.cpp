@@ -49,6 +49,7 @@ static void ReadFrames(Ngs2Voice& voice, float* current, float* next) {
 }
 
 bool Ngs2FinishBlock(Ngs2Voice& voice) {
+    voice.blocksFinished++;
     auto& block = voice.blocks.front();
     const bool repeat = block.info.num_repeats != 0;
     if (repeat) {
@@ -145,11 +146,6 @@ static void ApplyFilter(Ngs2Voice& voice, Ngs2Filter& filter, std::uint32_t grai
         }
     }
     if (grain % 4 != 0) throw std::runtime_error("NGS2: a sampler filter with a grain that is not a multiple of 4 is not implemented");
-    const std::uint64_t channels = (std::uint64_t{1} << voice.channels) - 1;
-    const std::uint64_t bypassed = filter.bypassMask & channels;
-    if (filter.type > 1 && bypassed != 0 && bypassed != channels) {
-        throw std::runtime_error("NGS2: sampler filter type " + std::to_string(filter.type) + " with a partial channel mask is not implemented");
-    }
     for (std::uint32_t channel = 0; channel < voice.channels; channel++) {
         if (Bypasses(filter, channel)) continue;
         auto& h = filter.history[channel];
