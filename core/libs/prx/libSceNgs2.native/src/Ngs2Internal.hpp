@@ -93,6 +93,10 @@ struct Ngs2Port {
     Ngs2Voice* dest = nullptr;
     float volume = 1.0f;
     std::int32_t matrix = -1;
+    float renderedVolume = 1.0f;
+    bool rendered = false;
+
+    bool Ramps() const { return rendered && renderedVolume != volume; }
 };
 
 struct Ngs2UserFx2 {

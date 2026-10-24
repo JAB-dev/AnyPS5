@@ -480,6 +480,81 @@ static void TestPcmCallbackSetup() {
     }
 }
 
+static std::vector<float> EightLaneRamp(float from, float to, std::uint32_t grain) {
+    const float step = (to - from) / static_cast<float>(grain);
+    std::vector<float> ramp(grain);
+    for (std::uint32_t lane = 0; lane < 8; lane++) {
+        float value = from + static_cast<float>(lane) * step;
+        for (std::uint32_t frame = lane; frame < grain; frame += 8) {
+            ramp[frame] = value;
+            value += 8.0f * step;
+        }
+    }
+    return ramp;
+}
+
+static void TestPortVolumeRampLikePs5() {
+    const auto setVolume = [](uintptr_t voice, bool command, float volume) {
+        if (!command) {
+            Control(voice, SCE_NGS2_VOICE_PARAM_PORT_VOLUME, Ngs2VoicePortVolumeParam{{}, 0, volume});
+            return;
+        }
+        const Ngs2VoiceCommand set{6, 0, 1, 0, {.f = volume}};
+        Require(sceNgs2VoiceRunCommands(voice, &set, 1) == SCE_NGS2_OK);
+    };
+    for (const std::uint32_t grain : {256u, 128u}) {
+        const std::vector<std::int16_t> mono(grain * 4, 16384);
+        std::vector<std::int16_t> stereo(grain * 8);
+        for (std::size_t i = 0; i < stereo.size(); i++) stereo[i] = i % 2 == 0 ? 8192 : 16384;
+        const auto render = [&](uintptr_t system, std::uint32_t channels) {
+            std::vector<float> out(grain * channels, -1.0f);
+            const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, channels};
+            Require(sceNgs2SystemRender(system, &info, 1) == SCE_NGS2_OK);
+            return out;
+        };
+        const auto expect = [&](const std::vector<float>& out, const std::vector<float>& volumes, std::uint32_t channels) {
+            for (std::uint32_t frame = 0; frame < grain; frame++) {
+                for (std::uint32_t channel = 0; channel < channels; channel++) {
+                    const float source = channels == 1 || channel == 1 ? 0.5f : 0.25f;
+                    const float sample = out[frame * channels + channel];
+                    Require(std::isnan(volumes[frame]) ? std::isnan(sample) : sample == source * volumes[frame]);
+                }
+            }
+        };
+        const auto change = [&](std::uint32_t channels, bool firstCommand, float first, bool command, const std::vector<float>& next, const std::vector<float>& measured) {
+            const auto system = CreateSystem();
+            Require(sceNgs2SystemSetGrainSamples(system, grain) == SCE_NGS2_OK);
+            const auto sampler = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
+            Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, channels, 48000, 0, 0, 0}});
+            const auto& pcm = channels == 1 ? mono : stereo;
+            const Ngs2WaveformBlock block{0, pcm.size() * sizeof(std::int16_t), 0, 0, grain * 4, 0, 0};
+            Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &block});
+            Patch(sampler, Mastering(system, channels));
+            Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+            setVolume(sampler, firstCommand, first);
+            expect(render(system, channels), std::vector<float>(grain, first), channels);
+            for (const float volume : next) setVolume(sampler, command, volume);
+            const auto ramp = EightLaneRamp(first, next.back(), grain);
+            const auto out = render(system, channels);
+            expect(out, ramp, channels);
+            if (grain == 256 && !measured.empty()) {
+                const std::uint32_t frames[5] = {0, 1, 128, 254, 255};
+                for (std::size_t i = 0; i < measured.size(); i++) Require(ramp[frames[i]] == measured[i]);
+            }
+            expect(render(system, channels), std::vector<float>(grain, next.back()), channels);
+            Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+        };
+        const float nan = NAN;
+        change(1, false, 0.5f, false, {2.0f}, {0.5f, 0.505859375f, 1.25f, 1.98828125f, 1.99414062f});
+        change(1, false, 32.0f, true, {-0.0f}, {32.0f, 31.875f, 16.0f, 0.25f, 0.125f});
+        change(1, false, 1.0f, true, {nan}, {});
+        change(1, true, nan, true, {1.0f}, {});
+        change(1, false, 1.0f, true, {4.0f, 0.5f}, {1.0f, 0.998046875f, 0.75f, 0.50390625f, 0.501953125f});
+        change(1, false, 0.3f, true, {0.7f}, {0.300000012f, 0.301562518f, 0.499999821f, 0.696874678f, 0.698437154f});
+        change(2, false, 0.5f, false, {2.0f}, {0.5f, 0.505859375f, 1.25f, 1.98828125f, 1.99414062f});
+    }
+}
+
 static void TestSubmixerMatrix() {
     const auto system = CreateSystem();
     const auto master = Mastering(system, 2);
@@ -1596,6 +1671,9 @@ int main() {
     TestPcmCallbackRefill();
     TestPcmCallbackSetup();
     TestSetupClearsCallback();
+
+    TestPortVolumeRampLikePs5();
+
     TestMasteringGain();
     TestMatrixLevelClamp();
     TestStereoIntoSurround();

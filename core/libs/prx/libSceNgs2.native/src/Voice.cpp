@@ -21,6 +21,7 @@ static constexpr std::uint8_t COMMAND_TYPE_FLOAT_ARRAY = 0x11;
 static constexpr float MAX_MATRIX_LEVEL = 4.0f;
 
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
+    for (auto& port : ports) port.rendered = false;
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
             if (state == Ngs2PlayState::Empty || state == Ngs2PlayState::Stopped) {
@@ -117,6 +118,7 @@ static void SetPortMatrix(Ngs2Voice& voice, std::uint32_t port, std::int32_t mat
 
 static void Patch(Ngs2Voice& voice, const Ngs2VoicePatchParam& patch) {
     auto& port = PortAt(voice, patch.port);
+    port.rendered = false;
     if (patch.dest_input_id != 0) throw std::runtime_error("NGS2: voice input " + std::to_string(patch.dest_input_id) + " is not implemented");
     if (patch.dest_handle == 0) {
         port.dest = nullptr;
