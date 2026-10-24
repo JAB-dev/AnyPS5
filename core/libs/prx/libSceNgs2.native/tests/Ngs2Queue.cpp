@@ -526,11 +526,6 @@ static void TestUnsupportedQueues() {
     }
 }
 
-static void TestStopDropsReset() {
-    const QueueCase stopped{"t4000", 0x1000, 48000, 48000, 256, 4, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,1000,0,0,1000] 1:s 2:a4[0,500,0,0,500] 2:p", 0, "", "", ""};
-    RunCase(stopped);
-}
-
 static void TestNoWaveformBlocks() {
     const QueueSystem system;
     const auto voice = CustomSampler(system.handle, 0);
@@ -551,7 +546,6 @@ int main() {
     TestMeasuredQueues();
     TestStopFlags();
     TestUnsupportedQueues();
-    TestStopDropsReset();
     TestNoWaveformBlocks();
     return 0;
 }

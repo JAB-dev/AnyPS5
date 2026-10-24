@@ -162,14 +162,6 @@ void Ngs2ApplyPendingClear(Ngs2Voice& voice) {
     Ngs2BuildPcmRuns(voice);
 }
 
-static void DropPendingClear(Ngs2Voice& voice) {
-    if (!voice.clearPending) return;
-    voice.clearPending = false;
-    voice.clearedRuns.clear();
-    voice.prefix.clear();
-    Ngs2BuildPcmRuns(voice);
-}
-
 static void PlayPcm(Ngs2Voice& voice) {
     voice.clearPending = false;
     voice.clearedRuns.clear();
@@ -210,7 +202,6 @@ static bool SetPcmEvent(Ngs2Voice& voice, std::uint32_t eventId) {
             voice.inUse = false;
             if (voice.rack->rackId == SCE_NGS2_RACK_ID_SAMPLER) voice.decodedSamples = 0;
             voice.decodedBytes = 0;
-            DropPendingClear(voice);
             return false;
         default: return false;
     }
@@ -259,7 +250,6 @@ void Ngs2Voice::ResetSetup() {
     pitch = 1.0f;
     phase = 0;
     blocks.clear();
-    slots.clear();
     writeIndex = 0;
     order.clear();
     prefix.clear();
