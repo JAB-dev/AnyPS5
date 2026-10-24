@@ -72,20 +72,21 @@ struct Ngs2ReverbDeleter {
 struct Ngs2Voice;
 
 struct Ngs2FilterHistory {
-    double x1 = 0.0;
-    double x2 = 0.0;
-    double y1 = 0.0;
-    double y2 = 0.0;
+    float x1 = 0.0f;
+    float x2 = 0.0f;
+    float y1 = 0.0f;
+    float y2 = 0.0f;
 };
 
 struct Ngs2Filter {
     bool enabled = false;
+    std::uint32_t location = 0;
     std::uint64_t bypassMask = 0;
-    double b0 = 1.0;
-    double b1 = 0.0;
-    double b2 = 0.0;
-    double a1 = 0.0;
-    double a2 = 0.0;
+    float h[4] = {};
+    float c[4] = {};
+    float d[4] = {};
+    float e1[4] = {};
+    float e2[4] = {};
     std::vector<Ngs2FilterHistory> history;
 };
 
@@ -118,6 +119,7 @@ struct Ngs2Voice {
     Ngs2PlayState state = Ngs2PlayState::Empty;
     std::uint32_t stateFlags = 0;
     std::uint32_t channels = 0;
+    std::uint32_t inputChannels = 0;
     std::uint32_t sampleRate = 0;
     std::uint32_t waveformType = 0;
     Ngs2Atrac9 atrac9;
@@ -153,6 +155,7 @@ struct Ngs2Voice {
     void SetEvent(std::uint32_t eventId);
     void ResetSetup();
     const std::uint8_t* WaveformData() const;
+    std::uint32_t InputChannels() const { return inputChannels != 0 ? inputChannels : channels; }
 };
 
 struct Ngs2Rack {

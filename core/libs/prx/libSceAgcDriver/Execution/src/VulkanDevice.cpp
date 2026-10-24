@@ -422,6 +422,7 @@ struct VulkanDevice::State {
     bool depthBounds = false;
     bool depthBiasClamp = false;
     bool dualSrcBlend = false;
+    bool logicOp = false;
     bool occlusionQueryPrecise = false;
     VkDeviceSize hostImportAlignment = 0;
     bool drawInputsInPlace = true;
@@ -1775,6 +1776,8 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     enabled.depthBiasClamp = available.depthBiasClamp;
     state->depthBiasClamp = enabled.depthBiasClamp == VK_TRUE;
     enabled.dualSrcBlend = available.dualSrcBlend;
+    enabled.logicOp = available.logicOp;
+    state->logicOp = enabled.logicOp == VK_TRUE;
     state->dualSrcBlend = enabled.dualSrcBlend == VK_TRUE;
     enabled.occlusionQueryPrecise = available.occlusionQueryPrecise;
     state->occlusionQueryPrecise = enabled.occlusionQueryPrecise == VK_TRUE;
@@ -2375,6 +2378,14 @@ std::uint64_t VulkanDevice::SubmitAndEpoch() {
 
 void VulkanDevice::WaitRecorded(std::uint64_t serial) {
     if (state->recorder) state->recorder->WaitSerial(serial);
+}
+
+std::uint64_t VulkanDevice::SubmittedEpoch() const {
+    return state->recorder ? state->recorder->NewestSubmitted() : 0;
+}
+
+bool VulkanDevice::WaitRecordedFor(std::uint64_t serial, std::uint64_t timeoutNanos) {
+    return state->recorder && state->recorder->WaitSerialFor(serial, timeoutNanos);
 }
 
 void VulkanDevice::ReapRecorded(std::uint64_t serial) {
@@ -3963,6 +3974,7 @@ Graphics::Context VulkanDevice::buildContext() const {
     context.drawIndirectFirstInstance = state->drawIndirectFirstInstance;
     context.multiDrawIndirect = state->multiDrawIndirect;
     context.dualSrcBlend = state->dualSrcBlend;
+    context.logicOp = state->logicOp;
     context.depthBounds = state->depthBounds;
     context.depthBiasClamp = state->depthBiasClamp;
     context.samplerFilterMinmax = state->samplerFilterMinmax;
@@ -4032,10 +4044,6 @@ VulkanDevice::IndirectDrawSupport VulkanDevice::DrawIndirectSupport() const {
 
 std::optional<std::string> VulkanDevice::KnownDrawRejection(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> shaders) const {
     return Graphics::KnownValidationFailure(graphicsContext(), shaders, graphics);
-}
-
-void VulkanDevice::DepthCopyPass(const Graphics::DepthCopyPass& pass) {
-    Graphics::RunDepthCopyPass(graphicsContext(), pass);
 }
 
 void VulkanDevice::ColorMetadataPass(const Graphics::ColorMetadataPass& pass) {

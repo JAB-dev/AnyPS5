@@ -137,16 +137,35 @@ static bool HasHistory(const Ngs2Filter& filter) {
 }
 
 static void ApplyFilter(Ngs2Voice& voice, Ngs2Filter& filter, std::uint32_t grain) {
+    if (filter.location >= 2) {
+        const std::size_t target = filter.location - 2;
+        if (voice.ports[target].dest == nullptr) return;
+        for (std::size_t port = 0; port < voice.ports.size(); port++) {
+            if (port != target && voice.ports[port].dest != nullptr) throw std::runtime_error("NGS2: a PRE_SEND sampler filter on a voice with another patched port is not implemented");
+        }
+    }
+    if (grain % 4 != 0) throw std::runtime_error("NGS2: a sampler filter with a grain that is not a multiple of 4 is not implemented");
     for (std::uint32_t channel = 0; channel < voice.channels; channel++) {
         if (Bypasses(filter, channel)) continue;
         auto& h = filter.history[channel];
-        for (std::uint32_t i = 0; i < grain; i++) {
-            auto& sample = voice.samples[channel * grain + i];
-            const double x = sample;
-            double y = filter.b0 * x + filter.b1 * h.x1 + filter.b2 * h.x2 - filter.a1 * h.y1 - filter.a2 * h.y2;
-            if (std::abs(y) < 1e-20) y = 0.0;
-            h = {x, h.x1, y, h.y1};
-            sample = static_cast<float>(y);
+        float* samples = voice.samples.data() + static_cast<std::size_t>(channel) * grain;
+        for (std::uint32_t k = 0; k < grain; k += 4) {
+            const float x[4] = {samples[k], samples[k + 1], samples[k + 2], samples[k + 3]};
+            float y[4];
+            for (int j = 0; j < 4; j++) {
+                const auto weight = [&](int m) { return m <= j ? filter.h[j - m] : 0.0f; };
+                float a = weight(2) * x[2];
+                a = std::fma(filter.e2[j], h.x2, a);
+                a = std::fma(weight(0), x[0], a);
+                a = std::fma(filter.d[j], h.y2, a);
+                float b = weight(3) * x[3];
+                b = std::fma(filter.e1[j], h.x1, b);
+                b = std::fma(weight(1), x[1], b);
+                b = std::fma(filter.c[j], h.y1, b);
+                y[j] = a + b;
+            }
+            h = {x[3], x[2], y[3], y[2]};
+            std::copy(y, y + 4, samples + k);
         }
     }
 }
@@ -166,9 +185,7 @@ static void RenderSampler(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t s
         voice.hasSamples = true;
     }
     const bool buffered = voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 && voice.atrac9.windowCursor * voice.channels < voice.atrac9.window.size();
-    if (voice.state == Ngs2PlayState::Playing && voice.blocks.empty() && !buffered && !voice.acceptsBlocks && std::none_of(voice.filters.begin(), voice.filters.end(), HasHistory)) {
-        voice.state = Ngs2PlayState::Empty;
-    }
+    if (voice.state == Ngs2PlayState::Playing && voice.blocks.empty() && !buffered && !voice.acceptsBlocks) voice.state = Ngs2PlayState::Empty;
 }
 
 static void RenderVoice(Ngs2Voice& voice, const std::vector<Ngs2Voice*>& voices, std::uint32_t grain, std::uint32_t systemRate);
@@ -221,10 +238,11 @@ float Ngs2DefaultLevel(std::uint32_t sourceChannels, std::uint32_t source, std::
 
 static void MixPort(Ngs2Voice& voice, const Ngs2Voice& source, const Ngs2Port& port, std::uint32_t grain) {
     const auto* matrix = port.matrix < 0 || source.matrices[port.matrix].empty() ? nullptr : &source.matrices[port.matrix];
-    const std::size_t outputs = matrix == nullptr ? voice.channels : std::min<std::size_t>(voice.channels, matrix->size() / source.channels);
+    const auto channels = voice.InputChannels();
+    const std::size_t outputs = matrix == nullptr ? channels : std::min<std::size_t>(channels, matrix->size() / source.channels);
     for (std::size_t dst = 0; dst < outputs; dst++) {
         for (std::uint32_t src = 0; src < source.channels; src++) {
-            const float level = port.volume * (matrix == nullptr ? Ngs2DefaultLevel(source.channels, src, voice.channels, static_cast<std::uint32_t>(dst)) : (*matrix)[dst * source.channels + src]);
+            const float level = port.volume * (matrix == nullptr ? Ngs2DefaultLevel(source.channels, src, channels, static_cast<std::uint32_t>(dst)) : (*matrix)[dst * source.channels + src]);
             if (level == 0.0f) continue;
             for (std::uint32_t i = 0; i < grain; i++) voice.samples[dst * grain + i] += source.samples[src * grain + i] * level;
         }
@@ -251,7 +269,7 @@ static void RenderVoice(Ngs2Voice& voice, const std::vector<Ngs2Voice*>& voices,
         bool& active;
         ~RenderingScope() { active = false; }
     } renderingScope{voice.rendering};
-    voice.samples.assign(static_cast<std::size_t>(grain) * voice.channels, 0.0f);
+    voice.samples.assign(static_cast<std::size_t>(grain) * voice.InputChannels(), 0.0f);
     voice.hasSamples = false;
     if (voice.state == Ngs2PlayState::Playing && voice.channels != 0) {
         if (voice.rack->rackId == SCE_NGS2_RACK_ID_SAMPLER || voice.rack->rackId == SCE_NGS2_RACK_ID_CUSTOM_SAMPLER) {
@@ -263,6 +281,7 @@ static void RenderVoice(Ngs2Voice& voice, const std::vector<Ngs2Voice*>& voices,
         Ngs2ProcessLegacyUserFx(voice, grain, systemRate);
         Ngs2ProcessUserFx(voice, grain, systemRate);
     }
+    if (voice.samples.size() != static_cast<std::size_t>(grain) * voice.channels) voice.samples.assign(static_cast<std::size_t>(grain) * voice.channels, 0.0f);
     voice.rendered = true;
 }
 
