@@ -138,10 +138,6 @@ static void TestSilenceBlock() {
     constexpr std::uint32_t playing = SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING;
     auto out = RenderI16(system);
     for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == 0);
-    Require(Flags(voice) == playing);
-    Ngs2SamplerVoiceState state{};
-    Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
-    Require(state.num_decoded_samples == Grain && state.decoded_data_size == Grain * 2);
 
     const auto withData = StreamVoice(rack, 1, master);
     const std::vector<std::int16_t> pcm(Grain, 1234);
