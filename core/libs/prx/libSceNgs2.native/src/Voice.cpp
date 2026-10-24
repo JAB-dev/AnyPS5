@@ -319,7 +319,7 @@ static void ApplySamplerParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& para
         case SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH:
         case SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH: {
             const float ratio = ParamAs<Ngs2SamplerVoicePitchParam>(param).ratio;
-            if (voice.waveformType != SCE_NGS2_WAVEFORM_TYPE_PCM_I16L && (!std::isfinite(ratio) || ratio < 0.0f)) APS5_INVALID_ARG_EX;
+            if (voice.waveformType != SCE_NGS2_WAVEFORM_TYPE_PCM_I16L && voice.waveformType != SCE_NGS2_WAVEFORM_TYPE_PCM_F32L && (!std::isfinite(ratio) || ratio < 0.0f)) APS5_INVALID_ARG_EX;
             voice.pitch = ratio;
             break;
         }

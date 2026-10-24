@@ -45,6 +45,7 @@ static void ReadPcm(const Ngs2Voice& voice, const std::uint8_t* frame, float* ou
 static const float* Kernel() {
     static const auto kernel = [] {
         const auto window = [](double t) {
+            if (std::abs(t) >= 2.0) return 0.0;
             const double sinc = t == 0.0 ? 1.0 : std::sin(std::numbers::pi * t) / (std::numbers::pi * t);
             return sinc * (0.5 + 0.5 * std::cos(std::numbers::pi * t / 2.0));
         };
@@ -214,6 +215,7 @@ static void RenderSampler(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t s
         voice.state = Ngs2PlayState::Empty;
         if (!atrac9) voice.ResetPosition();
         if (voice.rack->rackId == SCE_NGS2_RACK_ID_SAMPLER && !atrac9) voice.decodedSamples = 0;
+        if (!atrac9) voice.decodedBytes = 0;
     }
 }
 
