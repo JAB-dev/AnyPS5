@@ -168,7 +168,8 @@ static void TestNoBlocksForClearedVoice() {
     Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, &Unused, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 0, &unused});
     const float level = 1.0f;
     Control(voice, SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS, Ngs2VoiceMatrixLevelsParam{{}, 0, 0, &level});
-    Require(Throws([&] { Control(voice, SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS, Ngs2VoiceMatrixLevelsParam{{}, 1, 0, &level}); }));
+    const Ngs2VoiceMatrixLevelsParam badMatrix{{sizeof(Ngs2VoiceMatrixLevelsParam), 0, SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS}, 1, 0, &level};
+    Require(sceNgs2VoiceControl(voice, &badMatrix.header) == static_cast<int>(0x804A8355u));
     Require(Flags(voice) == 0);
     const std::vector<std::int16_t> pcm(4, 16384);
     Require(Throws([&] { AddBlock(voice, pcm.data(), pcm.size() * 2, 4, 0); }));

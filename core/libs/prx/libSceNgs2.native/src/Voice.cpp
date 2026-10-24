@@ -17,8 +17,12 @@ static constexpr std::uint32_t COMMAND_PORT_MATRIX = 7;
 static constexpr std::uint8_t COMMAND_TYPE_FLOAT = 1;
 static constexpr std::uint8_t COMMAND_TYPE_INT = 3;
 static constexpr std::uint8_t COMMAND_TYPE_UINT = 4;
-static constexpr std::uint8_t COMMAND_TYPE_FLOAT_ARRAY = 0x11;
-static constexpr float MAX_MATRIX_LEVEL = 4.0f;
+static constexpr std::int32_t FIRST_TEMPLATE_MATRIX = 16;
+static constexpr std::int32_t MAX_PORT_MATRIX_ID = 19;
+
+struct Ngs2ReturnCode {
+    int code;
+};
 
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
     switch (eventId) {
@@ -51,7 +55,7 @@ void Ngs2Voice::ResetSetup() {
     ++waveformRevision;
     SetEvent(SCE_NGS2_VOICE_EVENT_STOP_IMM);
     std::fill(ports.begin(), ports.end(), Ngs2Port{});
-    for (auto& matrix : matrices) matrix.clear();
+    for (auto& matrix : matrices) matrix.reset();
     filters.clear();
     fbwLevel = 1.0f;
     lfeLevel = 1.0f;
@@ -98,20 +102,25 @@ static Ngs2Port& PortAt(Ngs2Voice& voice, std::uint32_t port) {
 }
 
 static void SetMatrixLevels(Ngs2Voice& voice, std::uint32_t matrixId, const float* levels, std::uint32_t numLevels) {
-    if (numLevels == 0 && voice.channels == 0 && matrixId < voice.matrices.size()) {
-        voice.matrices[matrixId].clear();
-        return;
+    const auto rackId = voice.rack->rackId;
+    if (levels == nullptr && rackId != SCE_NGS2_RACK_ID_SAMPLER) {
+        throw std::runtime_error("NGS2: a NULL matrix level pointer is not implemented for rack " + Ngs2Hex(rackId));
     }
-    if (matrixId >= voice.matrices.size() || numLevels == 0 || numLevels > NGS2_MAX_CHANNELS * NGS2_MAX_CHANNELS || levels == nullptr) {
-        APS5_INVALID_ARG_EX;
-    }
-    auto& matrix = voice.matrices[matrixId];
-    matrix.resize(numLevels);
-    for (std::uint32_t i = 0; i < numLevels; i++) matrix[i] = std::clamp(levels[i], -MAX_MATRIX_LEVEL, MAX_MATRIX_LEVEL);
+    if (matrixId >= voice.matrices.size()) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_MATRIX_INDEX};
+    if (levels == nullptr) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_PARAM_ADDRESS};
+    if (numLevels > voice.rack->maxMatrixLevels) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_NUM_MATRIX_VOLUMES};
+    if (numLevels > SCE_NGS2_MAX_MATRIX_LEVELS) throw std::runtime_error("NGS2: more than 1369 matrix levels are not implemented");
+    voice.matrices[matrixId].emplace(levels, levels + numLevels);
 }
 
 static void SetPortMatrix(Ngs2Voice& voice, std::uint32_t port, std::int32_t matrixId) {
-    if (matrixId < -1 || matrixId >= static_cast<std::int32_t>(voice.matrices.size())) APS5_INVALID_ARG_EX;
+    const auto rackId = voice.rack->rackId;
+    if (rackId == SCE_NGS2_RACK_ID_MASTERING) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_OUTPUT_INDEX};
+    const bool own = matrixId >= -1 && matrixId < std::min(static_cast<std::int32_t>(voice.matrices.size()), FIRST_TEMPLATE_MATRIX);
+    if (rackId == SCE_NGS2_RACK_ID_CUSTOM_SAMPLER && !own) {
+        throw std::runtime_error("NGS2: port matrix " + std::to_string(matrixId) + " past the voice's matrices is not implemented for rack " + Ngs2Hex(rackId));
+    }
+    if (matrixId < -1 || matrixId > MAX_PORT_MATRIX_ID) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_VOICE_MATRIX_INDEX};
     PortAt(voice, port).matrix = matrixId;
 }
 
@@ -401,9 +410,13 @@ int APS5_VABI sceNgs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamHe
     auto* found = Ngs2FindVoice(voice_handle);
     if (found == nullptr) return SCE_NGS2_ERROR_INVALID_VOICE_HANDLE;
     auto& voice = *found;
-    for (const auto* param = param_list;; param = reinterpret_cast<const Ngs2VoiceParamHeader*>(reinterpret_cast<const std::uint8_t*>(param) + param->next)) {
-        ApplyParam(voice, *param);
-        if (param->next == 0) break;
+    try {
+        for (const auto* param = param_list;; param = reinterpret_cast<const Ngs2VoiceParamHeader*>(reinterpret_cast<const std::uint8_t*>(param) + param->next)) {
+            ApplyParam(voice, *param);
+            if (param->next == 0) break;
+        }
+    } catch (const Ngs2ReturnCode& result) {
+        return result.code;
     }
     return SCE_NGS2_OK;
 }
@@ -414,20 +427,26 @@ int APS5_VABI sceNgs2VoiceRunCommands(uintptr_t voice_handle, const Ngs2VoiceCom
     if (found == nullptr) return SCE_NGS2_ERROR_INVALID_VOICE_HANDLE;
     auto& voice = *found;
     if (commands == nullptr && num_commands != 0) APS5_INVALID_ARG_EX;
-    for (std::size_t i = 0; i < num_commands; i++) {
-        const auto& command = commands[i];
-        const std::uint32_t index = command.id >> 24;
-        const std::uint32_t id = command.id & 0xffffff;
-        const std::uint8_t expectedType = id == COMMAND_EVENT ? COMMAND_TYPE_UINT
-                                        : id == COMMAND_MATRIX_LEVELS ? COMMAND_TYPE_FLOAT_ARRAY
-                                        : id == COMMAND_PORT_VOLUME ? COMMAND_TYPE_FLOAT
-                                        : id == COMMAND_PORT_MATRIX ? COMMAND_TYPE_INT : 0;
-        if (expectedType == 0) throw std::runtime_error("NGS2: voice command " + Ngs2Hex(command.id) + " is not implemented");
-        if (command.type != expectedType) throw std::invalid_argument("NGS2: voice command " + Ngs2Hex(command.id) + " has value type " + Ngs2Hex(command.type));
-        if (id == COMMAND_EVENT) voice.SetEvent(command.value.u);
-        else if (id == COMMAND_MATRIX_LEVELS) SetMatrixLevels(voice, index, command.value.levels, command.count);
-        else if (id == COMMAND_PORT_VOLUME) PortAt(voice, index).volume = command.value.f;
-        else SetPortMatrix(voice, index, command.value.i);
+    try {
+        for (std::size_t i = 0; i < num_commands; i++) {
+            const auto& command = commands[i];
+            const std::uint32_t index = command.id >> 24;
+            const std::uint32_t id = command.id & 0xffffff;
+            if (id == COMMAND_MATRIX_LEVELS) {
+                SetMatrixLevels(voice, index, command.value.levels, command.count);
+                continue;
+            }
+            const std::uint8_t expectedType = id == COMMAND_EVENT ? COMMAND_TYPE_UINT
+                                            : id == COMMAND_PORT_VOLUME ? COMMAND_TYPE_FLOAT
+                                            : id == COMMAND_PORT_MATRIX ? COMMAND_TYPE_INT : 0;
+            if (expectedType == 0) throw std::runtime_error("NGS2: voice command " + Ngs2Hex(command.id) + " is not implemented");
+            if (command.type != expectedType) throw std::invalid_argument("NGS2: voice command " + Ngs2Hex(command.id) + " has value type " + Ngs2Hex(command.type));
+            if (id == COMMAND_EVENT) voice.SetEvent(command.value.u);
+            else if (id == COMMAND_PORT_VOLUME) PortAt(voice, index).volume = command.value.f;
+            else SetPortMatrix(voice, index, command.value.i);
+        }
+    } catch (const Ngs2ReturnCode& result) {
+        return result.code;
     }
     return SCE_NGS2_OK;
 }
@@ -485,12 +504,12 @@ int APS5_VABI sceNgs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* state
 
 int APS5_VABI sceNgs2VoiceGetPortInfo(uintptr_t voice_handle, uint32_t port, Ngs2VoicePortInfo* info, size_t info_size) {
     if (info == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
-    if (info_size != sizeof(Ngs2VoicePortInfo)) return SCE_NGS2_ERROR_INVALID_OUT_SIZE;
+    if (info_size < sizeof(Ngs2VoicePortInfo)) return SCE_NGS2_ERROR_INVALID_OUT_SIZE;
     const Ngs2Lock lock;
     auto* found = Ngs2FindVoice(voice_handle);
     if (found == nullptr) return SCE_NGS2_ERROR_INVALID_VOICE_HANDLE;
-    auto& voice = *found;
-    const auto& source = PortAt(voice, port);
+    if (port >= found->ports.size()) return SCE_NGS2_ERROR_INVALID_VOICE_OUTPUT_INDEX;
+    const auto& source = found->ports[port];
     *info = {};
     info->matrix_id = source.matrix;
     info->volume = source.volume;
@@ -534,16 +553,17 @@ int APS5_VABI sceNgs2VoiceGetOwner(uintptr_t voice_handle, uintptr_t* owner_rack
 }
 
 int APS5_VABI sceNgs2VoiceGetMatrixInfo(uintptr_t voice_handle, uint32_t matrix_id, Ngs2VoiceMatrixInfo* info, size_t info_size) {
-    if (info == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
-    if (info_size != sizeof(Ngs2VoiceMatrixInfo)) return SCE_NGS2_ERROR_INVALID_OUT_SIZE;
     const Ngs2Lock lock;
     const auto* found = Ngs2FindVoice(voice_handle);
     if (found == nullptr) return SCE_NGS2_ERROR_INVALID_VOICE_HANDLE;
-    if (matrix_id >= found->matrices.size()) APS5_INVALID_ARG_EX;
-    const auto& levels = found->matrices[matrix_id];
+    if (matrix_id >= found->matrices.size()) return SCE_NGS2_ERROR_INVALID_VOICE_MATRIX_INDEX;
+    if (info == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    if (info_size < sizeof(Ngs2VoiceMatrixInfo)) return SCE_NGS2_ERROR_INVALID_OUT_SIZE;
+    const auto& matrix = found->matrices[matrix_id];
     *info = {};
-    info->num_levels = static_cast<std::uint32_t>(levels.size());
-    std::copy(levels.begin(), levels.end(), info->levels);
+    if (!matrix) return SCE_NGS2_OK;
+    info->num_levels = static_cast<std::uint32_t>(matrix->size());
+    std::copy(matrix->begin(), matrix->end(), info->levels);
     return SCE_NGS2_OK;
 }
 
