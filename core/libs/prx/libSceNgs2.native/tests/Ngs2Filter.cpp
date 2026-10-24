@@ -1022,13 +1022,12 @@ static void TestRejectedFilterStopsTheParamList() {
 }
 
 template <typename TBetween>
-static std::vector<float> RampAroundEvent(const std::vector<std::int16_t>& ramp, TBetween between, float pitch = 1.0f) {
+static std::vector<float> RampAroundEvent(const std::vector<std::int16_t>& ramp, TBetween between, const Ngs2SamplerVoiceFilterParam* filter = &LOW_PASS, std::uint32_t rate = 48000) {
     const auto system = CreateSystem();
     const auto master = Mastering(system, 1);
-    const auto sampler = Sampler(system, ramp, 1, 48000);
+    const auto sampler = Sampler(system, ramp, 1, rate);
     Patch(sampler, master);
-    SetFilter(sampler, LOW_PASS);
-    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, pitch});
+    if (filter != nullptr) SetFilter(sampler, *filter);
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
     auto out = RenderGrains(system, 2);
     between(system, sampler);
@@ -1043,7 +1042,11 @@ static void PlayAgain(uintptr_t sampler) {
     Require(Flags(sampler) == SCE_NGS2_VOICE_STATE_FLAG_INUSE);
 }
 
-static void TestPlayRestartsAPlayingOrPausedVoice() {
+static void PlayThrows(uintptr_t sampler) {
+    Require(ThrowsRuntimeError([sampler] { Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY); }));
+}
+
+static void TestPlayRestartsAPlayingOrPausedFilteredVoice() {
     std::vector<std::int16_t> ramp(64 * Grain);
     for (std::size_t n = 0; n < ramp.size(); n++) ramp[n] = static_cast<std::int16_t>(n * 37 % 30000);
     const auto uninterrupted = RampAroundEvent(ramp, [](uintptr_t, uintptr_t) {});
@@ -1060,30 +1063,46 @@ static void TestPlayRestartsAPlayingOrPausedVoice() {
                                          Require(Flags(sampler) == SCE_NGS2_VOICE_STATE_FLAG_INUSE);
                                      }),
                      restarted));
-    const auto slow = RampAroundEvent(ramp, [](uintptr_t, uintptr_t) {}, 0.7f);
-    std::vector<float> slowRestarted(slow.begin(), slow.begin() + 2 * Grain);
-    slowRestarted.insert(slowRestarted.end(), slow.begin(), slow.begin() + 2 * Grain);
-    Require(SameBits(RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) { PlayAgain(sampler); }, 0.7f), slowRestarted));
+
+    const auto plain = RampAroundEvent(ramp, [](uintptr_t, uintptr_t) {}, nullptr);
+    Require(SameBits(RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) { Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY); }, nullptr), plain));
+    const auto off = Filter(0, 1, 0, 0, 1000.0f, Q, 1.0f);
+    Require(SameBits(RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) { Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY); }, &off), plain));
+    RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) { PlayThrows(sampler); }, &LOW_PASS, 44100);
+    RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) {
+        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, 0.5f});
+        PlayThrows(sampler);
+    });
 
     const std::vector<std::int16_t> pcm(Grain, 1000);
-    const auto system = CreateSystem();
-    const auto master = Mastering(system, 1);
-    const auto sampler = Sampler(system, pcm, 1, 48000);
-    Patch(sampler, master);
     const Ngs2WaveformBlock blocks[2] = {{0, pcm.size() * sizeof(std::int16_t), 0, 0, Grain / 2, 0, 0}, {0, pcm.size() * sizeof(std::int16_t), 0, 0, Grain, 0, 0}};
-    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 2, blocks});
-    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
-    RenderGrains(system, 1);
-    Require(ThrowsRuntimeError([&] { Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY); }));
-    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 1, &blocks[1]});
-    PlayAgain(sampler);
-    RenderGrains(system, 1);
-    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}});
-    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &blocks[1]});
-    Patch(sampler, master);
-    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
-    PlayAgain(sampler);
-    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    for (bool filtered : {false, true}) {
+        const auto system = CreateSystem();
+        const auto master = Mastering(system, 1);
+        const auto sampler = Sampler(system, pcm, 1, 48000);
+        Patch(sampler, master);
+        if (filtered) SetFilter(sampler, LOW_PASS);
+        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 2, blocks});
+        Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+        RenderGrains(system, 1);
+        if (!filtered) {
+            Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+            Require(Flags(sampler) == (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING));
+            Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+            continue;
+        }
+        PlayThrows(sampler);
+        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 1, &blocks[1]});
+        PlayAgain(sampler);
+        RenderGrains(system, 1);
+        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}});
+        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &blocks[1]});
+        Patch(sampler, master);
+        SetFilter(sampler, LOW_PASS);
+        Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+        PlayAgain(sampler);
+        Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    }
 }
 
 int main() {
@@ -1115,6 +1134,6 @@ int main() {
     TestPartialMasksBypassTheirChannels();
     TestFilterErrorOrder();
     TestRejectedFilterStopsTheParamList();
-    TestPlayRestartsAPlayingOrPausedVoice();
+    TestPlayRestartsAPlayingOrPausedFilteredVoice();
     return 0;
 }

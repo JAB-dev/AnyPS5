@@ -28,16 +28,12 @@ struct Ngs2ReturnCode {
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
-            if (state == Ngs2PlayState::Playing || state == Ngs2PlayState::Paused) {
-                if (blocksFinished != 0 || blocks.empty() || blocks.front().streaming) {
-                    throw std::runtime_error("NGS2: PLAY on a playing or paused voice past its first block or on a streaming block is not implemented");
+            if ((state == Ngs2PlayState::Playing || state == Ngs2PlayState::Paused) && std::any_of(filters.begin(), filters.end(), [](const Ngs2Filter& filter) { return filter.enabled; })) {
+                if (blocksFinished != 0 || blocks.empty() || blocks.front().streaming || waveformType != SCE_NGS2_WAVEFORM_TYPE_PCM_I16L || pitch != 1.0f ||
+                    sampleRate != rack->system->option.sample_rate) {
+                    throw std::runtime_error("NGS2: PLAY on a playing or paused voice with a filter is implemented only for its first PCM block at the system rate");
                 }
-                auto& block = blocks.front();
-                block.cursor = 0;
-                block.started = false;
-                block.dataCursor = 0;
-                phase = 0;
-                if (waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) Ngs2RestartAtrac9(*this);
+                blocks.front().cursor = 0;
                 stateFlags = 0;
                 state = Ngs2PlayState::Empty;
             }
