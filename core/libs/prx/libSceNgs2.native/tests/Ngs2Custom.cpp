@@ -294,6 +294,10 @@ static void TestCustomSampler() {
     Require(state.voice_state.state_flags == (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING) && state.num_decoded_samples == Grain);
     Render(system);
     Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK && state.num_decoded_samples == Grain * 2);
+    Render(system);
+    Render(system);
+    Render(system);
+    Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK && state.voice_state.state_flags == 0 && state.num_decoded_samples == Grain * 4);
 
     Require(sceNgs2RackDestroy(rack, nullptr) == SCE_NGS2_OK);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);

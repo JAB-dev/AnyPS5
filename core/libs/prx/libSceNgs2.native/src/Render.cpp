@@ -46,7 +46,7 @@ static const float* Kernel() {
     static const auto kernel = [] {
         const auto window = [](double t) {
             const double sinc = t == 0.0 ? 1.0 : std::sin(std::numbers::pi * t) / (std::numbers::pi * t);
-            return t >= 2.0 ? 0.0 : sinc * (0.5 + 0.5 * std::cos(std::numbers::pi * t / 2.0));
+            return sinc * (0.5 + 0.5 * std::cos(std::numbers::pi * t / 2.0));
         };
         std::array<float, 2 * KERNEL_PHASES + 1> table{};
         for (std::uint32_t phase = 0; phase < KERNEL_PHASES; phase++) {

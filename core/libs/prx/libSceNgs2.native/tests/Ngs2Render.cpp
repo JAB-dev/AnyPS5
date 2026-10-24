@@ -1929,6 +1929,34 @@ static void TestResamplerVoiceRate() {
     Require(slowest.flags[0] == 3 && std::all_of(slowest.out.begin(), slowest.out.end(), [](float sample) { return sample == 0.0f; }));
 }
 
+static void TestResamplerAfterEnd() {
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 1);
+    const auto voice = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
+    Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}});
+    Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, 0.7f});
+    const auto first = RandomPcm(4, 777);
+    const Ngs2WaveformBlock firstBlock{0, first.size() * sizeof(std::int16_t), 0, 0, 4, 0, 0};
+    Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, first.data(), 0, 1, &firstBlock});
+    Patch(voice, master);
+    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
+    RenderI16(system);
+    Require(Flags(voice) == 0);
+    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
+    Require(RenderI16(system) == std::vector<std::int16_t>(Grain, 0) && Flags(voice) == 0);
+    const auto second = RandomPcm(3 * Grain, 4242);
+    const Ngs2WaveformBlock secondBlock{0, second.size() * sizeof(std::int16_t), 0, 0, 3 * Grain, 0, 0};
+    Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, second.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 1, &secondBlock});
+    Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, 1.0f});
+    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
+    for (std::uint32_t render = 0; render < 2; render++) {
+        const auto out = RenderI16(system);
+        for (std::uint32_t i = 0; i < Grain; i++) Require(out[i] == Delayed(second, render * Grain + i));
+        Require(Flags(voice) == (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING));
+    }
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+}
+
 template <typename TSample>
 static void TestRenderCapacity(std::uint32_t waveformType, std::uint32_t channels) {
     const auto system = CreateSystem();
@@ -2123,6 +2151,7 @@ int main() {
     TestResamplerPitchChanges();
     TestResamplerPitchAtSetup();
     TestResamplerVoiceRate();
+    TestResamplerAfterEnd();
 
     TestRenderCapacity<float>(SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 1);
     TestRenderCapacity<float>(SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 2);
