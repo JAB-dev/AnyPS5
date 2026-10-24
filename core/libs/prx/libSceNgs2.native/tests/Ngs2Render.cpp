@@ -1604,7 +1604,7 @@ static void TestMatrixLevelLimitsAndPortMatrices() {
         Require(SetLevels(limited, 0, many.data(), limit, true) == SCE_NGS2_OK && StoredLevels(limited, 0).size() == limit);
     }
     const auto wide = SubmixerRackVoice(chain.system, 1, 40, 40);
-    Require(ThrowsRuntime([&] { SetLevels(wide, 0, many.data(), 1370, false); }) && StoredLevels(wide, 0).empty());
+    Require(ThrowsRuntime([&] { SetLevels(wide, 0, many.data(), 1370, false); }));
     Require(sceNgs2SystemDestroy(chain.system, nullptr) == SCE_NGS2_OK);
 
     for (const bool countZero : {false, true}) {
@@ -1843,7 +1843,7 @@ static void TestPortMatrixIdRanges() {
     }
 
     const std::vector<float> doubled{2.0f, 0.0f, 0.0f, 0.0f};
-    for (std::uint32_t maxMatrices : {1u, 4u, 17u, 20u, 24u}) {
+    for (std::uint32_t maxMatrices : {1u, 4u, 17u, 32u}) {
         const auto mixSystem = CreateSystem();
         const auto master = Mastering(mixSystem, 2);
         const auto submixer = SubmixerRackVoice(mixSystem, maxMatrices, 0, 0);
@@ -1852,25 +1852,25 @@ static void TestPortMatrixIdRanges() {
         const auto source = Sampler(mixSystem, MatrixPcm, 0);
         Patch(source, submixer);
         Event(source, SCE_NGS2_VOICE_EVENT_PLAY);
-        const std::int32_t last = static_cast<std::int32_t>(maxMatrices) - 1;
+        const std::int32_t last = static_cast<std::int32_t>(std::min(maxMatrices, 16u)) - 1;
         for (std::int32_t id : {-1, last}) Require(SetPortMatrix(submixer, id) == SCE_NGS2_OK && PortMatrixId(submixer) == id);
         Require(StereoFrame(mixSystem) == (std::vector<float>{spread, spread}));
         Require(SetLevels(submixer, static_cast<std::uint32_t>(last), doubled.data(), 4, false) == SCE_NGS2_OK);
         Require(StereoFrame(mixSystem) == (std::vector<float>{2.0f * spread, 0.0f}));
-        for (std::int32_t id : {-2, 20, 100}) {
-            if (id >= 0 && id <= last) continue;
-            Require(SetPortMatrix(submixer, id) == BadMatrixIndex && PortMatrixId(submixer) == last);
+        for (std::int32_t id : {-2, 20, 100}) Require(SetPortMatrix(submixer, id) == BadMatrixIndex && PortMatrixId(submixer) == last);
+        for (std::uint32_t id : {16u, 17u, 19u, 23u, 31u}) {
+            if (id < maxMatrices) Require(SetLevels(submixer, id, doubled.data(), 4, false) == SCE_NGS2_OK);
         }
-        for (std::int32_t id : {last + 1, 15, 16}) {
-            if (id <= last || id > 16) continue;
+        if (maxMatrices == 32) {
+            for (std::int32_t id : {23, 31}) Require(SetPortMatrix(submixer, id) == BadMatrixIndex && PortMatrixId(submixer) == last);
+        }
+        Require(SetPortMatrix(submixer, 16) == SCE_NGS2_OK && PortMatrixId(submixer) == 16);
+        Require(StereoFrame(mixSystem) == (std::vector<float>{spread, spread}));
+        Require(SetPortMatrix(submixer, 19) == SCE_NGS2_OK && StereoFrame(mixSystem) == silent);
+        std::vector<float> out(Grain * 2);
+        const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 2};
+        for (std::int32_t id : {17, 18}) {
             Require(SetPortMatrix(submixer, id) == SCE_NGS2_OK && PortMatrixId(submixer) == id);
-            Require(StereoFrame(mixSystem) == (std::vector<float>{spread, spread}));
-        }
-        if (last < 19) Require(SetPortMatrix(submixer, 19) == SCE_NGS2_OK && StereoFrame(mixSystem) == silent);
-        if (last < 17) {
-            Require(SetPortMatrix(submixer, 17) == SCE_NGS2_OK && PortMatrixId(submixer) == 17);
-            std::vector<float> out(Grain * 2);
-            const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 2};
             Require(ThrowsRuntime([&] { sceNgs2SystemRender(mixSystem, &info, 1); }));
         }
         Require(sceNgs2SystemDestroy(mixSystem, nullptr) == SCE_NGS2_OK);

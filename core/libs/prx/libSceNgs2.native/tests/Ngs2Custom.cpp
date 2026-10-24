@@ -262,7 +262,7 @@ static void TestCustomSampler() {
     common.size = sizeof(option);
     common.max_grain_samples = 512;
     common.max_voices = 2;
-    common.max_matrices = 1;
+    common.max_matrices = 17;
     common.max_ports = 1;
     option.custom_rack_option.num_buffers = 1;
     option.custom_rack_option.num_modules = 2;
@@ -296,8 +296,8 @@ static void TestCustomSampler() {
 
     const auto out = Render(system);
     for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == 0.5f && out[i * 2 + 1] == 0.75f);
-    for (std::int32_t id : {1, 16, 19, -2}) Require(ControlThrows<std::runtime_error>(voice, SCE_NGS2_VOICE_PARAM_PORT_MATRIX, Ngs2VoicePortMatrixParam{{}, 0, id}));
-    Require(SetPortMatrix(voice, 0) == SCE_NGS2_OK && SetPortMatrix(voice, -1) == SCE_NGS2_OK && PortMatrixId(voice) == -1);
+    for (std::int32_t id : {16, 19, -2}) Require(ControlThrows<std::runtime_error>(voice, SCE_NGS2_VOICE_PARAM_PORT_MATRIX, Ngs2VoicePortMatrixParam{{}, 0, id}));
+    Require(SetPortMatrix(voice, 15) == SCE_NGS2_OK && SetPortMatrix(voice, -1) == SCE_NGS2_OK && PortMatrixId(voice) == -1);
 
     Ngs2CustomSamplerVoiceState state{};
     Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(Ngs2SamplerVoiceState)) == SCE_NGS2_ERROR_INVALID_OUT_SIZE);
