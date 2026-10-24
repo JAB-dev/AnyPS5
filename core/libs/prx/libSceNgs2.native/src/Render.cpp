@@ -130,7 +130,7 @@ static bool ConsumeSamples(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t 
     voice.hasSamples = audible;
     voice.renderedSincePlay = true;
     voice.starving = false;
-    if (voice.endless || (voice.position >> NGS2_POSITION_BITS) <= voice.total) return false;
+    if ((voice.position >> NGS2_POSITION_BITS) <= voice.total) return false;
     if (!voice.acceptsBlocks) return true;
     voice.starving = true;
     voice.position = ((voice.total + PARK_FRAMES) << NGS2_POSITION_BITS) | (voice.position & POSITION_FRACTION);

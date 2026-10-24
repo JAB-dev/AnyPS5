@@ -51,9 +51,13 @@ struct Ngs2PcmBlock {
     std::uint64_t Pass() const;
 };
 
+struct Ngs2PcmQueued {
+    std::uint32_t slot;
+    Ngs2PcmBlock block;
+};
+
 struct Ngs2PcmRun {
     Ngs2PcmBlock block;
-    std::int32_t slot = -1;
     std::uint64_t start = 0;
     std::uint64_t length = 0;
     std::uint64_t passes = 0;
@@ -150,12 +154,11 @@ struct Ngs2Voice {
     std::deque<Ngs2Block> blocks;
     std::vector<Ngs2PcmBlock> slots;
     std::uint32_t writeIndex = 0;
-    std::vector<std::uint32_t> order;
+    std::vector<Ngs2PcmQueued> order;
     std::vector<Ngs2PcmRun> prefix;
     std::vector<Ngs2PcmRun> runs;
     std::vector<Ngs2PcmRun> clearedRuns;
     std::uint64_t total = 0;
-    bool endless = false;
     std::uint64_t position = 0;
     std::uint64_t signalledTo = 0;
     Ngs2Pause pause = Ngs2Pause::None;

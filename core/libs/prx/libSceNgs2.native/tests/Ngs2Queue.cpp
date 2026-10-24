@@ -281,6 +281,13 @@ static const QueueCase queueCases[] = {
     {"t4000", 0x1000, 48000, 48000, 256, 5, "0:a1[0,64,4294967295,0,64] 0:p 1:a0[1000,64,2,0,64]", 0xa47eee2a6a921983ull, "3 3 3 3 3", "256 512 768 1024 1280", "512 1024 1536 2048 2560"},
 };
 
+static const QueueCase stopCases[] = {
+    {"t4000", 0x1000, 48000, 48000, 256, 8, "0:a0[0,2000,0,0,2000] 0:p 2:P 3:S 4:p", 0, "3 3 5 0 3 3 3 3", "256 512 768 0 256 512 768 1024", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 6, "0:a0[0,300,0,0,300] 0:p 1:S 2:p", 0, "3 0 3 0 0 0", "256 0 256 0 0 0", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 6, "0:a0[0,300,0,0,300] 0:p 1:s 3:p", 0, "3 0 0 3 0 0", "256 0 0 256 0 0", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 6, "0:a0[0,300,0,0,300] 0:p 1:k 2:p", 0, "3 0 3 0 0 0", "256 0 256 0 0 0", ""},
+};
+
 static const QueueCase unsupportedCases[] = {
     {"t4000", 0x1000, 48000, 48000, 256, 8, "0:a0[0,2000,0,0,2000] 0:p 2:P 3:a4[3000,300,0,0,300] 4:R", 0, "", "", ""},
     {"t4000", 0x1000, 48000, 48000, 256, 8, "0:a0[0,1000,0,0,1000] 0:p 2:a4[2000,100,0,0,100]", 0, "", "", ""},
@@ -298,7 +305,11 @@ static const QueueCase unsupportedCases[] = {
     {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,1000,0,10,990]", 0, "", "", ""},
     {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,1000,0,0,0]", 0, "", "", ""},
     {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,0,0,0,1000]", 0, "", "", ""},
-    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a5[2000,1000,0,0,1000] 1:a1[3000,100,0,0,100]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a5[2000,1000,0,0,1000] 1:a3[3000,100,0,0,100]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,256,0,0,256]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a1[0,100,0,0,100] 0:p 1:a4[2000,0,0,0,1000]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 4, "0:a0[0,2000,0,0,2000] 0:p 2:P 2:a4[2000,1000,0,0,1000]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 5, "0:a0[0,2000,0,0,2000] 0:p 2:P 3:a4[2000,1000,0,0,1000]", 0, "", "", ""},
     {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,1000,0,0,1000] 1:P", 0, "", "", ""},
     {"t4000", 0x1000, 48000, 48000, 256, 4, "0:a0[0,1000,0,0,1000] 0:p 1:a5[2000,1000,0,0,1000] 2:a3[3000,100,0,0,100]", 0, "", "", ""},
     {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a1[0,10,0,0,10;10,10,0,0,10;20,10,0,0,10] 0:p 1:a1[30,10,0,0,10;40,10,0,0,10]", 0, "", "", ""},
@@ -410,7 +421,10 @@ static int Send(uintptr_t voice, bool custom, const QueueOp& op, const std::vect
         Ngs2SamplerVoicePitchParam param{{sizeof(Ngs2SamplerVoicePitchParam), 0, custom ? SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH : SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH}, ratio};
         return sceNgs2VoiceControl(voice, &param.header);
     }
-    const std::uint32_t event = op.kind == 'p' ? SCE_NGS2_VOICE_EVENT_PLAY : op.kind == 'P' ? SCE_NGS2_VOICE_EVENT_PAUSE : op.kind == 's' ? SCE_NGS2_VOICE_EVENT_STOP : SCE_NGS2_VOICE_EVENT_RESUME;
+    const std::uint32_t event = op.kind == 'p' ? SCE_NGS2_VOICE_EVENT_PLAY : op.kind == 'P' ? SCE_NGS2_VOICE_EVENT_PAUSE : op.kind == 's' ? SCE_NGS2_VOICE_EVENT_STOP
+                               : op.kind == 'S' ? SCE_NGS2_VOICE_EVENT_STOP_IMM
+                               : op.kind == 'k' ? SCE_NGS2_VOICE_EVENT_KILL
+                                                : SCE_NGS2_VOICE_EVENT_RESUME;
     Ngs2VoiceEventParam param{{sizeof(Ngs2VoiceEventParam), 0, SCE_NGS2_VOICE_PARAM_EVENT}, event};
     return sceNgs2VoiceControl(voice, &param.header);
 }
@@ -483,7 +497,7 @@ static bool RunCase(const QueueCase& queueCase) {
         }
     }
     const bool bytes = queueCase.decodedBytes[0] == '\0' || Join(decodedBytes, false) == queueCase.decodedBytes;
-    return results && Hash(out) == queueCase.out && Join(flags, true) == queueCase.flags && Join(decoded, false) == queueCase.decoded && bytes;
+    return results && (queueCase.out == 0 || Hash(out) == queueCase.out) && Join(flags, true) == queueCase.flags && Join(decoded, false) == queueCase.decoded && bytes;
 }
 
 static void TestMeasuredQueues() {
@@ -494,6 +508,10 @@ static void TestMeasuredQueues() {
         failed++;
     }
     Require(failed == 0);
+}
+
+static void TestStopFlags() {
+    for (const auto& queueCase : stopCases) Require(RunCase(queueCase));
 }
 
 static void TestUnsupportedQueues() {
@@ -531,6 +549,7 @@ static void TestNoWaveformBlocks() {
 
 int main() {
     TestMeasuredQueues();
+    TestStopFlags();
     TestUnsupportedQueues();
     TestStopDropsReset();
     TestNoWaveformBlocks();
