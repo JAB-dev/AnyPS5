@@ -7,6 +7,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -118,6 +119,7 @@ struct Ngs2Voice {
     Ngs2PlayState state = Ngs2PlayState::Empty;
     std::uint32_t stateFlags = 0;
     std::uint32_t channels = 0;
+    std::uint32_t inputChannels = 0;
     std::uint32_t sampleRate = 0;
     std::uint32_t waveformType = 0;
     Ngs2Atrac9 atrac9;
@@ -134,7 +136,7 @@ struct Ngs2Voice {
     std::uintptr_t callbackData = 0;
     std::uint32_t callbackFlags = 0;
     std::vector<Ngs2Port> ports;
-    std::vector<std::vector<float>> matrices;
+    std::vector<std::optional<std::vector<float>>> matrices;
     std::vector<Ngs2Filter> filters;
     std::uint32_t outputId = 0;
     float fbwLevel = 1.0f;
@@ -153,6 +155,7 @@ struct Ngs2Voice {
     void SetEvent(std::uint32_t eventId);
     void ResetSetup();
     const std::uint8_t* WaveformData() const;
+    std::uint32_t InputChannels() const { return inputChannels != 0 ? inputChannels : channels; }
 };
 
 struct Ngs2Rack {
@@ -162,6 +165,7 @@ struct Ngs2Rack {
     char name[64] = {};
     std::uint32_t maxChannels = 0;
     std::uint32_t maxFilters = 0;
+    std::uint64_t maxMatrixLevels = 0;
     std::uint32_t maxGrainSamples = 0;
     std::uint32_t maxChannelWorks = 0;
     std::uint32_t maxInputs = 0;
