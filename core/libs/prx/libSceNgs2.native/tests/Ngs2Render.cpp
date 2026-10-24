@@ -749,8 +749,8 @@ static void TestReverbConversion() {
     for (std::size_t i = 0; i < six.size(); i++) six[i] = levels[i % 6];
     const auto down = RenderReverbChannels(6, 2, dry, six, 2048);
     const float half = std::numbers::sqrt2_v<float> / 2.0f;
-    const float left = (8192.0f + 2048.0f * half + 512.0f * 0.5f) / 32768.0f;
-    const float right = (4096.0f + 2048.0f * half + 256.0f * 0.5f) / 32768.0f;
+    const float left = (8192.0f + 2048.0f * half + 512.0f * half) / 32768.0f;
+    const float right = (4096.0f + 2048.0f * half + 256.0f * half) / 32768.0f;
     Require(std::fabs(down[1024 * 2] - left) <= left * 1e-5f && std::fabs(down[1024 * 2 + 1] - right) <= right * 1e-5f);
 }
 
