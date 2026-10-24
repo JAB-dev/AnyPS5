@@ -1438,11 +1438,10 @@ static void TestDefaultMapLikePs5() {
         Require(MixFrame(8, channel, 1) == std::vector<float>{half});
     }
 
-    const auto masterFrame = [](std::uint32_t channels, std::uint32_t channel, std::uint32_t outputChannels, float fbw) {
+    const auto masterFrame = [](std::uint32_t channels, std::uint32_t channel, std::uint32_t outputChannels) {
         const auto firstBuffer = usedBuffers;
         const auto system = CreateSystem();
         const auto master = Mastering(system, channels);
-        Control(master, SCE_NGS2_MASTERING_VOICE_PARAM_GAIN, Ngs2MasteringVoiceGainParam{{}, fbw, 1.0f});
         const auto voice = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
         Control(voice, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, channels, 48000, 0, 0, 0}});
         std::vector<std::int16_t> frames(Grain * channels, 0);
@@ -1464,26 +1463,26 @@ static void TestDefaultMapLikePs5() {
         for (std::uint32_t i = 1; !threw && i < Grain; i++) Require(std::equal(out.begin(), out.begin() + outputChannels, out.begin() + i * outputChannels));
         return threw ? std::vector<float>{} : std::vector<float>(out.begin(), out.begin() + outputChannels);
     };
-    Require(masterFrame(1, 0, 2, 1.0f) == (std::vector<float>{0.5f, 0}));
-    Require(masterFrame(1, 0, 6, 1.0f) == (std::vector<float>{0.5f, 0, 0, 0, 0, 0}));
-    Require(masterFrame(1, 0, 8, 1.0f) == (std::vector<float>{0.5f, 0, 0, 0, 0, 0, 0, 0}));
-    Require(masterFrame(2, 1, 1, 1.0f) == std::vector<float>{half});
-    Require(masterFrame(2, 1, 8, 1.0f) == (std::vector<float>{0, 0.5f, 0, 0, 0, 0, 0, 0}));
-    Require(masterFrame(6, 0, 1, 1.0f) == std::vector<float>{half});
-    Require(masterFrame(6, 2, 1, 1.0f) == std::vector<float>{0.5f});
-    Require(masterFrame(6, 3, 1, 1.0f) == std::vector<float>{0});
-    Require(masterFrame(6, 4, 1, 1.0f) == std::vector<float>{0.25f});
-    Require(masterFrame(6, 2, 2, 1.0f) == (std::vector<float>{half, half}));
-    Require(masterFrame(6, 3, 2, 1.0f) == (std::vector<float>{0, 0}));
-    Require(masterFrame(6, 5, 2, 1.0f) == (std::vector<float>{0, half}));
-    Require(masterFrame(6, 0, 2, 0.5f) == (std::vector<float>{0.25f, 0}));
-    Require(masterFrame(6, 3, 8, 1.0f) == (std::vector<float>{0, 0, 0, 0.5f, 0, 0, 0, 0}));
-    Require(masterFrame(6, 5, 8, 1.0f) == (std::vector<float>{0, 0, 0, 0, 0, 0.5f, 0, 0}));
-    Require(masterFrame(8, 6, 1, 1.0f) == std::vector<float>{half});
-    Require(masterFrame(8, 7, 2, 1.0f) == (std::vector<float>{0, half}));
-    Require(masterFrame(8, 6, 6, 1.0f) == (std::vector<float>{0, 0, 0, 0, 0.5f, 0}));
-    Require(masterFrame(8, 3, 6, 1.0f) == (std::vector<float>{0, 0, 0, 0.5f, 0, 0}));
-    Require(masterFrame(6, 0, 4, 1.0f).empty() && masterFrame(8, 0, 7, 1.0f).empty() && masterFrame(1, 0, 3, 1.0f).empty());
+    Require(masterFrame(1, 0, 2) == (std::vector<float>{0.5f, 0}));
+    Require(masterFrame(1, 0, 6) == (std::vector<float>{0.5f, 0, 0, 0, 0, 0}));
+    Require(masterFrame(1, 0, 8) == (std::vector<float>{0.5f, 0, 0, 0, 0, 0, 0, 0}));
+    Require(masterFrame(2, 1, 1) == std::vector<float>{half});
+    Require(masterFrame(2, 1, 8) == (std::vector<float>{0, 0.5f, 0, 0, 0, 0, 0, 0}));
+    Require(masterFrame(6, 0, 1) == std::vector<float>{half});
+    Require(masterFrame(6, 2, 1) == std::vector<float>{0.5f});
+    Require(masterFrame(6, 3, 1) == std::vector<float>{0});
+    Require(masterFrame(6, 4, 1) == std::vector<float>{0.25f});
+    Require(masterFrame(6, 2, 2) == (std::vector<float>{half, half}));
+    Require(masterFrame(6, 3, 2) == (std::vector<float>{0, 0}));
+    Require(masterFrame(6, 5, 2) == (std::vector<float>{0, half}));
+    Require(masterFrame(6, 3, 8) == (std::vector<float>{0, 0, 0, 0.5f, 0, 0, 0, 0}));
+    Require(masterFrame(6, 5, 8) == (std::vector<float>{0, 0, 0, 0, 0, 0.5f, 0, 0}));
+    Require(masterFrame(8, 4, 1) == std::vector<float>{half});
+    Require(masterFrame(8, 6, 1) == std::vector<float>{half});
+    Require(masterFrame(8, 7, 2) == (std::vector<float>{0, half}));
+    Require(masterFrame(8, 6, 6) == (std::vector<float>{0, 0, 0, 0, 0.5f, 0}));
+    Require(masterFrame(8, 3, 6) == (std::vector<float>{0, 0, 0, 0.5f, 0, 0}));
+    Require(masterFrame(6, 0, 4).empty() && masterFrame(8, 0, 7).empty() && masterFrame(1, 0, 3).empty());
 }
 
 template <typename TSample>
