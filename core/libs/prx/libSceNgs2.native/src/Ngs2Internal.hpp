@@ -94,6 +94,8 @@ struct Ngs2Port {
     float volume = 1.0f;
     std::int32_t matrix = -1;
     std::vector<float> mixedGains;
+    std::uint32_t mixedOutputs = 0;
+    std::uint32_t mixedSources = 0;
     bool mixed = false;
 };
 

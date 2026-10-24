@@ -684,7 +684,22 @@ static void TestPortGainRampFromZeroLikePs5() {
     rig.Volume(1.0f);
     ExpectRampFrames(rig.Render(), 1, 0.25f, 0.0f, 1.0f, 256);
     rig.Volume(0.0f);
-    Require(rig.Render()[255] == 0.25f * 0.00390625f);
+    ExpectRampFrames(rig.Render(), 1, 0.25f, 1.0f, 0.0f, 256);
+}
+
+static void TestPortGainRampOnLayoutChange() {
+    GainRig rig(256, 2, 8192, 256 * 4);
+    rig.Matrix(0);
+    rig.Levels(0, {1.0f, 1.0f, 1.0f, 1.0f});
+    rig.Render();
+    rig.Levels(0, {1.0f, 0.5f, 1.0f, 0.5f});
+    rig.Render();
+    rig.Levels(0, {0.5f, 0.5f});
+    const auto out = rig.Render();
+    for (std::uint32_t frame = 0; frame < 256; frame++) {
+        Require(out[frame * 2] == 0.25f);
+        Require(out[frame * 2 + 1] == 0.0f);
+    }
 }
 
 static void TestSubmixerMatrix() {
@@ -1808,6 +1823,7 @@ int main() {
     TestPortMatrixLevelRampLikePs5();
     TestPortGainRampResetsLikePs5();
     TestPortGainRampFromZeroLikePs5();
+    TestPortGainRampOnLayoutChange();
 
     TestMasteringGain();
     TestMatrixLevelClamp();

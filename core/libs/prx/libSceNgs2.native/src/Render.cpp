@@ -219,13 +219,13 @@ float Ngs2DefaultLevel(std::uint32_t sourceChannels, std::uint32_t source, std::
     }
 }
 
-static std::vector<float> PortGains(const Ngs2Voice& voice, const Ngs2Voice& source, const Ngs2Port& port) {
+static std::vector<float> PortGains(const Ngs2Voice& voice, const Ngs2Voice& source, const Ngs2Port& port, std::uint32_t& outputs) {
     const auto* matrix = port.matrix < 0 || source.matrices[port.matrix].empty() ? nullptr : &source.matrices[port.matrix];
-    const std::size_t outputs = matrix == nullptr ? voice.channels : std::min<std::size_t>(voice.channels, matrix->size() / source.channels);
-    std::vector<float> gains(outputs * source.channels);
-    for (std::size_t dst = 0; dst < outputs; dst++) {
+    outputs = static_cast<std::uint32_t>(matrix == nullptr ? voice.channels : std::min<std::size_t>(voice.channels, matrix->size() / source.channels));
+    std::vector<float> gains(static_cast<std::size_t>(outputs) * source.channels);
+    for (std::uint32_t dst = 0; dst < outputs; dst++) {
         for (std::uint32_t src = 0; src < source.channels; src++) {
-            const float level = matrix == nullptr ? Ngs2DefaultLevel(source.channels, src, voice.channels, static_cast<std::uint32_t>(dst)) : (*matrix)[dst * source.channels + src];
+            const float level = matrix == nullptr ? Ngs2DefaultLevel(source.channels, src, voice.channels, dst) : (*matrix)[dst * source.channels + src];
             gains[dst * source.channels + src] = level * port.volume;
         }
     }
@@ -262,10 +262,13 @@ static void MixInputs(Ngs2Voice& voice, const std::vector<Ngs2Voice*>& voices, s
             if (port.dest != &voice) continue;
             RenderVoice(*source, voices, grain, systemRate);
             if (source->channels == 0) continue;
-            auto gains = PortGains(voice, *source, port);
-            if (port.mixed && port.mixedGains.size() != gains.size()) port.mixed = false;
+            std::uint32_t outputs = 0;
+            auto gains = PortGains(voice, *source, port, outputs);
+            if (port.mixed && (port.mixedOutputs != outputs || port.mixedSources != source->channels)) port.mixed = false;
             if (source->hasSamples && MixPort(voice, *source, port, gains, grain)) voice.hasSamples = true;
             port.mixedGains = std::move(gains);
+            port.mixedOutputs = outputs;
+            port.mixedSources = source->channels;
             port.mixed = true;
         }
     }
