@@ -20,6 +20,10 @@ static constexpr std::uint8_t COMMAND_TYPE_UINT = 4;
 static constexpr std::uint8_t COMMAND_TYPE_FLOAT_ARRAY = 0x11;
 static constexpr float MAX_MATRIX_LEVEL = 4.0f;
 
+struct Ngs2ReturnCode {
+    int code;
+};
+
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
@@ -171,6 +175,7 @@ static void ApplyCommonParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param
 }
 
 static void SetupSampler(Ngs2Voice& voice, const Ngs2WaveformFormat& format) {
+    if (voice.onlyData) throw std::runtime_error("NGS2: a setup after an ONLY_DATA block is not implemented");
     voice.ResetSetup();
     if (format.waveform_type == 0 && format.num_channels == 0 && format.sample_rate == 0) return;
     if (format.waveform_type != SCE_NGS2_WAVEFORM_TYPE_PCM_I16L && format.waveform_type != SCE_NGS2_WAVEFORM_TYPE_ATRAC9) {
@@ -212,12 +217,38 @@ static void AppendStreamData(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlo
     }
 }
 
+static void CheckQueueRoom(const Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksParam& param, bool reset) {
+    if (voice.rack->rackId != SCE_NGS2_RACK_ID_SAMPLER || voice.waveformType != SCE_NGS2_WAVEFORM_TYPE_PCM_I16L) return;
+    if (voice.blocks.size() + param.num_blocks <= voice.rack->maxWaveformBlocks) return;
+    const bool unmeasured = std::any_of(voice.blocks.begin(), voice.blocks.end(), [](const Ngs2Block& block) { return block.streaming || block.info.num_repeats != 0; }) ||
+                            std::any_of(param.blocks, param.blocks + param.num_blocks, [](const Ngs2WaveformBlock& block) {
+                                return block.num_repeats != 0 || (block.num_samples == 0 && block.data_size == 0);
+                            });
+    if (reset || unmeasured) throw std::runtime_error("NGS2: a full waveform block queue with a reset, an empty, a repeating or a streaming block is not implemented");
+    throw Ngs2ReturnCode{SCE_NGS2_ERROR_FULL_WAVEFORM_BLOCKS};
+}
+
+static bool MeasuredFlags(const Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksParam& param) {
+    constexpr std::uint32_t usedFlags = SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_SILENCE;
+    static constexpr std::uint32_t WITHOUT_BLOCKS[] = {0x8, 0x9, 0xA, 0xC, 0x18, 0x20, 0x30, 0x40, 0x80, 0x100, 0x200, 0x80000000};
+    static constexpr std::uint32_t WITH_ONE_BLOCK[] = {0x9, 0x18, 0x30, 0x40, 0x80, 0x100, 0x200, 0x80000000};
+    if ((param.flags & ~usedFlags) == 0) return true;
+    if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 || param.num_blocks > 1) return false;
+    const auto ran = [&](const auto& values) { return std::find(std::begin(values), std::end(values), param.flags) != std::end(values); };
+    return param.num_blocks == 0 ? ran(WITHOUT_BLOCKS) : ran(WITH_ONE_BLOCK);
+}
+
 static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksParam& param) {
-    constexpr std::uint32_t knownFlags = SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_SILENCE;
-    if ((param.flags & ~knownFlags) != 0) throw std::runtime_error("NGS2: waveform block flags " + Ngs2Hex(param.flags) + " are not implemented");
-    if ((param.num_blocks != 0 && (voice.channels == 0 || param.blocks == nullptr || param.data == nullptr)) || (voice.channels == 0 && (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND) != 0)) APS5_INVALID_ARG_EX;
+    if (!MeasuredFlags(voice, param)) throw std::runtime_error("NGS2: waveform block flags " + Ngs2Hex(param.flags) + " are not implemented");
+    if (param.num_blocks != 0 && (param.blocks == nullptr || param.data == nullptr)) APS5_INVALID_ARG_EX;
     const bool reset = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET) != 0;
-    if (!voice.acceptsBlocks && !reset) throw std::invalid_argument("NGS2: the voice waveform was already closed");
+    const bool append = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND) != 0;
+    if (!voice.acceptsBlocks && !reset) throw Ngs2ReturnCode{SCE_NGS2_ERROR_FULL_WAVEFORM_BLOCKS};
+    if (param.num_blocks != 0 && voice.channels == 0) APS5_INVALID_ARG_EX;
+    if (voice.onlyData) throw std::runtime_error("NGS2: a waveform add after an ONLY_DATA block is not implemented");
+    if (!append) CheckQueueRoom(voice, param, reset);
+    const bool onlyData = append && !reset && param.num_blocks == 1 && voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_PCM_I16L && voice.blocks.empty() &&
+                          voice.decodedSamples == 0 && param.blocks[0].data_size != 0 && param.blocks[0].num_samples != 0;
     if (reset) {
         ++voice.waveformRevision;
         voice.blocks.clear();
@@ -226,8 +257,9 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
         if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) Ngs2RestartAtrac9(voice);
     }
     const std::size_t frameBytes = voice.channels * sizeof(std::int16_t);
-    if ((param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND) != 0) {
-        AppendStreamData(voice, param, frameBytes);
+    if (append) {
+        if (onlyData) voice.onlyData = true;
+        else if (param.num_blocks != 0) AppendStreamData(voice, param, frameBytes);
         voice.acceptsBlocks = (param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE) != 0;
         return;
     }
@@ -401,9 +433,13 @@ int APS5_VABI sceNgs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamHe
     auto* found = Ngs2FindVoice(voice_handle);
     if (found == nullptr) return SCE_NGS2_ERROR_INVALID_VOICE_HANDLE;
     auto& voice = *found;
-    for (const auto* param = param_list;; param = reinterpret_cast<const Ngs2VoiceParamHeader*>(reinterpret_cast<const std::uint8_t*>(param) + param->next)) {
-        ApplyParam(voice, *param);
-        if (param->next == 0) break;
+    try {
+        for (const auto* param = param_list;; param = reinterpret_cast<const Ngs2VoiceParamHeader*>(reinterpret_cast<const std::uint8_t*>(param) + param->next)) {
+            ApplyParam(voice, *param);
+            if (param->next == 0) break;
+        }
+    } catch (const Ngs2ReturnCode& result) {
+        return result.code;
     }
     return SCE_NGS2_OK;
 }
