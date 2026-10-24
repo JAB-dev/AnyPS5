@@ -118,6 +118,7 @@ struct Ngs2Voice {
     Ngs2PlayState state = Ngs2PlayState::Empty;
     std::uint32_t stateFlags = 0;
     std::uint32_t channels = 0;
+    std::uint32_t inputChannels = 0;
     std::uint32_t sampleRate = 0;
     std::uint32_t waveformType = 0;
     Ngs2Atrac9 atrac9;
@@ -153,6 +154,7 @@ struct Ngs2Voice {
     void SetEvent(std::uint32_t eventId);
     void ResetSetup();
     const std::uint8_t* WaveformData() const;
+    std::uint32_t InputChannels() const { return inputChannels != 0 ? inputChannels : channels; }
 };
 
 struct Ngs2Rack {
@@ -249,6 +251,7 @@ void Ngs2ProcessLegacyUserFx(Ngs2Voice& voice, std::uint32_t grain, std::uint32_
 void Ngs2RenderSystem(Ngs2System& system, const Ngs2RenderBufferInfo* bufferInfo, std::uint32_t numBufferInfo);
 void Ngs2RenderSilence(const Ngs2System& system, const Ngs2RenderBufferInfo* bufferInfo, std::uint32_t numBufferInfo);
 float Ngs2DefaultLevel(std::uint32_t sourceChannels, std::uint32_t source, std::uint32_t destChannels, std::uint32_t dest);
+float Ngs2PanDownmixLevel(std::uint32_t sourceChannels, std::uint32_t source, std::uint32_t destChannels, std::uint32_t dest);
 int Ngs2PanInit(Ngs2PanWork* work, const float* speaker_angles, float unit_angle, uint32_t num_speakers);
 int Ngs2PanGetVolumeMatrix(Ngs2PanWork* work, const Ngs2PanParam* params, uint32_t num_params, uint32_t matrix_format, float* out_volume_matrix);
 int Ngs2GeomResetListenerParam(Ngs2GeomListenerParam* out_listener_param);
