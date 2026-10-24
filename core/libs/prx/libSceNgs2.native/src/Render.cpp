@@ -29,6 +29,7 @@ static float ReadPcm(const std::uint8_t* frame, std::uint32_t channel) {
 static const float* Kernel() {
     static const auto kernel = [] {
         const auto window = [](double t) {
+            if (std::abs(t) >= 2.0) return 0.0;
             const double sinc = t == 0.0 ? 1.0 : std::sin(std::numbers::pi * t) / (std::numbers::pi * t);
             return sinc * (0.5 + 0.5 * std::cos(std::numbers::pi * t / 2.0));
         };
