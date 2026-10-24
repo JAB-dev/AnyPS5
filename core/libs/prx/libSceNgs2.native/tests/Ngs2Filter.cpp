@@ -443,9 +443,8 @@ static std::vector<float> PortsOutput(std::initializer_list<std::uint32_t> ports
 static void TestLocationsFilterTheirPorts() {
     std::vector<float> unfiltered(2 * Grain, 0.0f);
     unfiltered[0] = 0.5f;
-    for (const auto& [port, location] : {std::pair{0u, 0u}, std::pair{1u, 1u}, std::pair{0u, 2u}, std::pair{1u, 3u}, std::pair{7u, 9u}}) {
-        RequireResponse(PortsOutput({port}, location), FC_1000, 1e-5f);
-    }
+    for (const auto& [port, location] : {std::pair{0u, 0u}, std::pair{1u, 1u}}) RequireResponse(PortsOutput({port}, location), FC_1000, 1e-5f);
+    for (std::uint32_t port = 0; port < 8; port++) RequireResponse(PortsOutput({port}, 2 + port), FC_1000, 1e-5f);
     for (std::uint32_t location : {0u, 1u}) {
         auto both = PortsOutput({0, 7}, location);
         for (auto& sample : both) sample /= 2.0f;
@@ -1022,10 +1021,10 @@ static void TestRejectedFilterStopsTheParamList() {
 }
 
 template <typename TBetween>
-static std::vector<float> RampAroundEvent(const std::vector<std::int16_t>& ramp, TBetween between, const Ngs2SamplerVoiceFilterParam* filter = &LOW_PASS, std::uint32_t rate = 48000) {
+static std::vector<float> RampAroundEvent(const std::vector<std::int16_t>& ramp, TBetween between, const Ngs2SamplerVoiceFilterParam* filter) {
     const auto system = CreateSystem();
     const auto master = Mastering(system, 1);
-    const auto sampler = Sampler(system, ramp, 1, rate);
+    const auto sampler = Sampler(system, ramp, 1, 48000);
     Patch(sampler, master);
     if (filter != nullptr) SetFilter(sampler, *filter);
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
@@ -1037,72 +1036,29 @@ static std::vector<float> RampAroundEvent(const std::vector<std::int16_t>& ramp,
     return out;
 }
 
-static void PlayAgain(uintptr_t sampler) {
-    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
-    Require(Flags(sampler) == SCE_NGS2_VOICE_STATE_FLAG_INUSE);
-}
-
 static void PlayThrows(uintptr_t sampler) {
     Require(ThrowsRuntimeError([sampler] { Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY); }));
 }
 
-static void TestPlayRestartsAPlayingOrPausedFilteredVoice() {
+static void TestPlayOnAPlayingFilteredVoiceThrows() {
     std::vector<std::int16_t> ramp(64 * Grain);
     for (std::size_t n = 0; n < ramp.size(); n++) ramp[n] = static_cast<std::int16_t>(n * 37 % 30000);
-    const auto uninterrupted = RampAroundEvent(ramp, [](uintptr_t, uintptr_t) {});
-    std::vector<float> restarted(uninterrupted.begin(), uninterrupted.begin() + 2 * Grain);
-    restarted.insert(restarted.end(), uninterrupted.begin(), uninterrupted.begin() + 2 * Grain);
-    Require(!SameBits(uninterrupted, restarted));
-    Require(SameBits(RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) { PlayAgain(sampler); }), restarted));
-    Require(SameBits(RampAroundEvent(ramp,
-                                     [](uintptr_t system, uintptr_t sampler) {
-                                         Event(sampler, SCE_NGS2_VOICE_EVENT_PAUSE);
-                                         RenderGrains(system, 2);
-                                         PlayAgain(sampler);
-                                         Event(sampler, SCE_NGS2_VOICE_EVENT_RESUME);
-                                         Require(Flags(sampler) == SCE_NGS2_VOICE_STATE_FLAG_INUSE);
-                                     }),
-                     restarted));
-
+    RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) { PlayThrows(sampler); }, &LOW_PASS);
+    RampAroundEvent(ramp,
+                    [](uintptr_t system, uintptr_t sampler) {
+                        Event(sampler, SCE_NGS2_VOICE_EVENT_PAUSE);
+                        RenderGrains(system, 1);
+                        PlayThrows(sampler);
+                    },
+                    &LOW_PASS);
     const auto plain = RampAroundEvent(ramp, [](uintptr_t, uintptr_t) {}, nullptr);
-    Require(SameBits(RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) { Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY); }, nullptr), plain));
+    const auto play = [](uintptr_t, uintptr_t sampler) {
+        Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+        Require(Flags(sampler) == (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING));
+    };
+    Require(SameBits(RampAroundEvent(ramp, play, nullptr), plain));
     const auto off = Filter(0, 1, 0, 0, 1000.0f, Q, 1.0f);
-    Require(SameBits(RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) { Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY); }, &off), plain));
-    RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) { PlayThrows(sampler); }, &LOW_PASS, 44100);
-    RampAroundEvent(ramp, [](uintptr_t, uintptr_t sampler) {
-        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, 0.5f});
-        PlayThrows(sampler);
-    });
-
-    const std::vector<std::int16_t> pcm(Grain, 1000);
-    const Ngs2WaveformBlock blocks[2] = {{0, pcm.size() * sizeof(std::int16_t), 0, 0, Grain / 2, 0, 0}, {0, pcm.size() * sizeof(std::int16_t), 0, 0, Grain, 0, 0}};
-    for (bool filtered : {false, true}) {
-        const auto system = CreateSystem();
-        const auto master = Mastering(system, 1);
-        const auto sampler = Sampler(system, pcm, 1, 48000);
-        Patch(sampler, master);
-        if (filtered) SetFilter(sampler, LOW_PASS);
-        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 2, blocks});
-        Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
-        RenderGrains(system, 1);
-        if (!filtered) {
-            Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
-            Require(Flags(sampler) == (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING));
-            Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
-            continue;
-        }
-        PlayThrows(sampler);
-        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 1, &blocks[1]});
-        PlayAgain(sampler);
-        RenderGrains(system, 1);
-        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}});
-        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &blocks[1]});
-        Patch(sampler, master);
-        SetFilter(sampler, LOW_PASS);
-        Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
-        PlayAgain(sampler);
-        Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
-    }
+    Require(SameBits(RampAroundEvent(ramp, play, &off), plain));
 }
 
 int main() {
@@ -1134,6 +1090,6 @@ int main() {
     TestPartialMasksBypassTheirChannels();
     TestFilterErrorOrder();
     TestRejectedFilterStopsTheParamList();
-    TestPlayRestartsAPlayingOrPausedFilteredVoice();
+    TestPlayOnAPlayingFilteredVoiceThrows();
     return 0;
 }

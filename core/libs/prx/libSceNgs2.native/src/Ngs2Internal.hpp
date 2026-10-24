@@ -126,7 +126,6 @@ struct Ngs2Voice {
     float pitch = 1.0f;
     std::uint64_t phase = 0;
     std::deque<Ngs2Block> blocks;
-    std::uint32_t blocksFinished = 0;
     bool acceptsBlocks = true;
     std::uint64_t decodedSamples = 0;
     std::uint64_t decodedBytes = 0;

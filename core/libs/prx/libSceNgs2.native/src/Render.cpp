@@ -49,7 +49,6 @@ static void ReadFrames(Ngs2Voice& voice, float* current, float* next) {
 }
 
 bool Ngs2FinishBlock(Ngs2Voice& voice) {
-    voice.blocksFinished++;
     auto& block = voice.blocks.front();
     const bool repeat = block.info.num_repeats != 0;
     if (repeat) {

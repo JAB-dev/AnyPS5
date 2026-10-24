@@ -29,13 +29,7 @@ void Ngs2Voice::SetEvent(std::uint32_t eventId) {
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
             if ((state == Ngs2PlayState::Playing || state == Ngs2PlayState::Paused) && std::any_of(filters.begin(), filters.end(), [](const Ngs2Filter& filter) { return filter.enabled; })) {
-                if (blocksFinished != 0 || blocks.empty() || blocks.front().streaming || waveformType != SCE_NGS2_WAVEFORM_TYPE_PCM_I16L || pitch != 1.0f ||
-                    sampleRate != rack->system->option.sample_rate) {
-                    throw std::runtime_error("NGS2: PLAY on a playing or paused voice with a filter is implemented only for its first PCM block at the system rate");
-                }
-                blocks.front().cursor = 0;
-                stateFlags = 0;
-                state = Ngs2PlayState::Empty;
+                throw std::runtime_error("NGS2: PLAY on a playing or paused voice with a filter is not implemented");
             }
             if (state == Ngs2PlayState::Empty || state == Ngs2PlayState::Stopped) {
                 for (auto& filter : filters) std::fill(filter.history.begin(), filter.history.end(), Ngs2FilterHistory{});
@@ -77,7 +71,6 @@ void Ngs2Voice::ResetSetup() {
     pitch = 1.0f;
     phase = 0;
     blocks.clear();
-    blocksFinished = 0;
     acceptsBlocks = true;
     decodedSamples = 0;
     decodedBytes = 0;
@@ -237,7 +230,6 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
     if (reset) {
         ++voice.waveformRevision;
         voice.blocks.clear();
-        voice.blocksFinished = 0;
         voice.phase = 0;
         voice.waveformEnd = nullptr;
         if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) Ngs2RestartAtrac9(voice);
