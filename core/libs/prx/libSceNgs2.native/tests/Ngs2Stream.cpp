@@ -372,6 +372,17 @@ static void TestIgnoredFlagsAndOnlyData() {
         Require(Add(voice, ramp, 1, 0) == full);
         finish(voice);
     }
+
+    const auto resetData = fresh();
+    Require(Throws([&] { Add(resetData, ramp, 1, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET); }));
+    const auto noData = fresh();
+    Require(Throws([&] { AddBlock(noData, ramp.data(), 0, Grain, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND); }));
+    Require(Throws([&] { AddBlock(noData, ramp.data(), ramp.size() * 2, 0, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND); }));
+    const auto played = fresh();
+    Require(Add(played, first, 1, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE) == SCE_NGS2_OK);
+    Event(played, SCE_NGS2_VOICE_EVENT_PLAY);
+    Require(RenderI16(system) == first && Flags(played) == playingEmpty);
+    Require(Throws([&] { Add(played, ramp, 1, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE); }));
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
