@@ -82,7 +82,7 @@ static void TestLowPassAndTail() {
         const auto out = RenderGrain(system, 1);
         for (std::uint32_t i = 0; i < Grain; i++) {
             const auto frame = grain * Grain + i;
-            const float expected = reference.Next(frame < pcm.size() ? pcm[frame] / 32768.0 : 0.0);
+            const float expected = reference.Next(frame >= 3 && frame - 3 < pcm.size() ? pcm[frame - 3] / 32768.0 : 0.0);
             Require(std::abs(out[i] - expected) <= 1e-7f);
         }
         Require(out[Grain - 1] != 0.0f);
@@ -109,15 +109,16 @@ static void TestBypassMaskAndGain() {
     SetFilter(sampler, Filter(0, 1, 1, 1, 24000.0f, 1.0f, 0.5f));
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
 
-    auto out = RenderGrain(system, 2);
-    for (std::uint32_t i = 0; i < Grain; i++) {
-        Require(out[i * 2] == pcm[i * 2] / 32768.0f);
-        Require(out[i * 2 + 1] == pcm[i * 2 + 1] / 32768.0f * 0.5f);
+    for (std::uint32_t grain = 0; grain < 2; grain++) {
+        const auto out = RenderGrain(system, 2);
+        for (std::uint32_t i = 0; i < Grain; i++) {
+            const auto frame = grain * Grain + i;
+            const bool played = frame >= 3 && frame - 3 < Grain;
+            Require(out[i * 2] == (played ? pcm[(frame - 3) * 2] / 32768.0f : 0.0f));
+            Require(out[i * 2 + 1] == (played ? pcm[(frame - 3) * 2 + 1] / 32768.0f * 0.5f : 0.0f));
+        }
+        Require(Flags(sampler) == (grain == 0 ? (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING) : 0));
     }
-    Require(Flags(sampler) == (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING));
-    out = RenderGrain(system, 2);
-    for (float sample : out) Require(sample == 0.0f);
-    Require(Flags(sampler) == 0);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
@@ -131,8 +132,9 @@ static void TestSystemRateAndZeroCutoff() {
     SetFilter(sampler, Filter(1, 1, 1, 0, 30000.0f, 0.70710678f, 1.0f));
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
     Biquad reference(18000.0, static_cast<double>(0.70710678f), 1.0, 48000.0);
+    const float resampled[Grain] = {0.0f, 0.0f, 0.0f, -0.0303300861f, 0.0f, 0.49999997f, 1.0f, 1.03033006f};
     const auto out = RenderGrain(system, 1);
-    for (std::uint32_t i = 0; i < Grain; i++) Require(std::abs(out[i] - reference.Next(0.25)) <= 1e-7f);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(std::abs(out[i] - reference.Next(resampled[i] * 0.25f)) <= 1e-7f);
 
     SetFilter(sampler, Filter(1, 1, 1, 0, 0.0f, 0.70710678f, 1.0f));
     for (float sample : RenderGrain(system, 1)) Require(sample == 0.0f);
@@ -142,7 +144,8 @@ static void TestSystemRateAndZeroCutoff() {
     Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &block});
     Patch(sampler, master);
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
-    for (float sample : RenderGrain(system, 1)) Require(sample == 0.25f);
+    const auto unfiltered = RenderGrain(system, 1);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(unfiltered[i] == (i < 3 ? 0.0f : 0.25f));
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 

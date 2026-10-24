@@ -19,11 +19,41 @@ static constexpr std::uint8_t COMMAND_TYPE_INT = 3;
 static constexpr std::uint8_t COMMAND_TYPE_UINT = 4;
 static constexpr std::uint8_t COMMAND_TYPE_FLOAT_ARRAY = 0x11;
 static constexpr float MAX_MATRIX_LEVEL = 4.0f;
+static constexpr std::uint32_t MAX_SAMPLER_RATE = 192000;
+
+struct Ngs2ReturnCode {
+    int code;
+};
+
+static void PlayPcmSampler(Ngs2Voice& voice) {
+    if (voice.state == Ngs2PlayState::Paused) throw std::runtime_error("NGS2: PLAY on a paused PCM sampler voice is not implemented");
+    if (voice.played) {
+        if (std::any_of(voice.waveform.begin(), voice.waveform.end(), [](const Ngs2Block& block) { return block.streaming; })) {
+            throw std::runtime_error("NGS2: replaying a streaming PCM waveform is not implemented");
+        }
+        voice.blocks = voice.waveform;
+        voice.ResetPosition();
+        voice.decodedSamples = 0;
+        voice.decodedBytes = 0;
+    }
+    voice.played = true;
+    voice.state = Ngs2PlayState::Playing;
+    voice.stateFlags |= SCE_NGS2_VOICE_STATE_FLAG_INUSE;
+}
+
+void Ngs2Voice::ResetPosition() {
+    phase = 0;
+    pendingFrames = 0;
+    pastEnd = false;
+    history = {};
+}
 
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
-            if (state == Ngs2PlayState::Empty || state == Ngs2PlayState::Stopped) {
+            if (waveformType == SCE_NGS2_WAVEFORM_TYPE_PCM_I16L) {
+                PlayPcmSampler(*this);
+            } else if (state == Ngs2PlayState::Empty || state == Ngs2PlayState::Stopped) {
                 state = Ngs2PlayState::Playing;
                 stateFlags |= SCE_NGS2_VOICE_STATE_FLAG_INUSE;
                 if (userFxHandler) userFxFlags = 1;
@@ -60,8 +90,10 @@ void Ngs2Voice::ResetSetup() {
     waveformType = 0;
     atrac9 = {};
     pitch = 1.0f;
-    phase = 0;
+    ResetPosition();
+    played = false;
     blocks.clear();
+    waveform.clear();
     acceptsBlocks = true;
     decodedSamples = 0;
     decodedBytes = 0;
@@ -177,7 +209,8 @@ static void SetupSampler(Ngs2Voice& voice, const Ngs2WaveformFormat& format) {
         throw std::runtime_error("NGS2: waveform type " + Ngs2Hex(format.waveform_type) + " is not implemented");
     }
     if (format.frame_offset != 0 || format.frame_margin != 0) throw std::runtime_error("NGS2: waveform frame offset and margin are not implemented");
-    if (format.num_channels == 0 || format.num_channels > NGS2_MAX_CHANNELS || format.sample_rate == 0) APS5_INVALID_ARG_EX;
+    if (format.num_channels == 0 || format.num_channels > NGS2_MAX_CHANNELS) APS5_INVALID_ARG_EX;
+    if (format.sample_rate == 0 || format.sample_rate > MAX_SAMPLER_RATE) throw Ngs2ReturnCode{SCE_NGS2_ERROR_INVALID_SAMPLE_RATE};
     voice.channels = format.num_channels;
     voice.sampleRate = format.sample_rate;
     voice.waveformType = format.waveform_type;
@@ -221,7 +254,8 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
     if (reset) {
         ++voice.waveformRevision;
         voice.blocks.clear();
-        voice.phase = 0;
+        voice.waveform.clear();
+        voice.ResetPosition();
         voice.waveformEnd = nullptr;
         if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) Ngs2RestartAtrac9(voice);
     }
@@ -236,9 +270,11 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
     for (std::uint32_t i = 0; i < param.num_blocks; i++) {
         const auto& block = param.blocks[i];
         if (block.num_samples == 0 && block.data_size == 0) continue;
+        if (block.num_skip_samples != 0 && voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_PCM_I16L) throw std::runtime_error("NGS2: skipped samples in a PCM waveform block are not implemented");
         if (allowsSilence && block.data_size == 0) {
             if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) throw std::runtime_error("NGS2: a dataless waveform block under the silence flag is not implemented for ATRAC9 voices");
             voice.blocks.push_back({nullptr, block});
+            voice.waveform.push_back(voice.blocks.back());
             continue;
         }
         const std::uint64_t bytes = voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 ? Ngs2Atrac9BlockBytes(voice, block)
@@ -256,6 +292,7 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
             stream.availableFrames = block.data_size / frameBytes;
             stream.pieces.push_back({stream.data, 0, stream.availableFrames});
         }
+        voice.waveform.push_back(voice.blocks.back());
     }
 }
 
@@ -312,7 +349,8 @@ static void ApplySamplerParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& para
         case SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH:
         case SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH: {
             const float ratio = ParamAs<Ngs2SamplerVoicePitchParam>(param).ratio;
-            if (!std::isfinite(ratio) || ratio < 0.0f) APS5_INVALID_ARG_EX;
+            const bool measured = param.id == SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH && voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_PCM_I16L;
+            if (!measured && (!std::isfinite(ratio) || ratio < 0.0f)) APS5_INVALID_ARG_EX;
             voice.pitch = ratio;
             break;
         }
@@ -400,9 +438,13 @@ int APS5_VABI sceNgs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamHe
     auto* found = Ngs2FindVoice(voice_handle);
     if (found == nullptr) return SCE_NGS2_ERROR_INVALID_VOICE_HANDLE;
     auto& voice = *found;
-    for (const auto* param = param_list;; param = reinterpret_cast<const Ngs2VoiceParamHeader*>(reinterpret_cast<const std::uint8_t*>(param) + param->next)) {
-        ApplyParam(voice, *param);
-        if (param->next == 0) break;
+    try {
+        for (const auto* param = param_list;; param = reinterpret_cast<const Ngs2VoiceParamHeader*>(reinterpret_cast<const std::uint8_t*>(param) + param->next)) {
+            ApplyParam(voice, *param);
+            if (param->next == 0) break;
+        }
+    } catch (const Ngs2ReturnCode& result) {
+        return result.code;
     }
     return SCE_NGS2_OK;
 }

@@ -157,7 +157,7 @@ static void TestUserFxChain() {
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
 
     auto out = Render(system);
-    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == 0.5f && out[i * 2 + 1] == 0.75f);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == (i < 3 ? 0.0f : 0.5f) && out[i * 2 + 1] == (i < 3 ? 0.25f : 0.75f));
     Require(calls.processFlags == (std::vector<std::uint32_t>{1}) && calls.order == (std::vector<int>{0, 1}));
 
     const float gain = 0.5f;
@@ -275,13 +275,14 @@ static void TestCustomSampler() {
     const Ngs2WaveformBlock block{0, pcm.size() * sizeof(std::int16_t), 1, 0, static_cast<std::uint32_t>(pcm.size() / 2), 0, 0};
     Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &block});
     Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, 1.0f});
+    Require(ControlThrows<std::invalid_argument>(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH, Ngs2SamplerVoicePitchParam{{}, std::numeric_limits<float>::quiet_NaN()}));
     const Ngs2VoiceParamHeader exitLoop{sizeof(Ngs2VoiceParamHeader), 0, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_EXIT_LOOP};
     Require(sceNgs2VoiceControl(voice, &exitLoop) == SCE_NGS2_OK);
     Patch(voice, master);
     Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
 
     const auto out = Render(system);
-    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == 0.5f && out[i * 2 + 1] == 0.75f);
+    for (std::uint32_t i = 0; i < Grain; i++) Require(out[i * 2] == (i < 3 ? 0.0f : 0.5f) && out[i * 2 + 1] == (i < 3 ? 0.25f : 0.75f));
 
     Ngs2CustomSamplerVoiceState state{};
     Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(Ngs2SamplerVoiceState)) == SCE_NGS2_ERROR_INVALID_OUT_SIZE);
@@ -343,7 +344,7 @@ static void TestCustomFilter() {
     std::vector<float> out(Grain, -1.0f);
     const Ngs2RenderBufferInfo renderInfo{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 1};
     Require(sceNgs2SystemRender(system, &renderInfo, 1) == SCE_NGS2_OK);
-    Require(out[0] > 0.0f && out[0] < 0.2f && out.back() > out[0]);
+    Require(out[2] == 0.0f && out[3] > 0.0f && out[3] < 0.2f && out.back() > out[3]);
 
     Ngs2CustomVoiceFilterParam unsupported{};
     unsupported.type = 2;
@@ -352,7 +353,7 @@ static void TestCustomFilter() {
     Control(voice, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS,
             Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET, 1, &block});
     Require(sceNgs2SystemRender(system, &renderInfo, 1) == SCE_NGS2_OK);
-    Require(out[0] > 0.4f);
+    Require(out[2] == 0.0f && out[3] > 0.4f);
     Require(sceNgs2RackDestroy(rack, nullptr) == SCE_NGS2_OK);
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
@@ -674,7 +675,8 @@ static void TestCustomDelay(std::uint32_t count, const DelayOption& delay) {
     const auto checkGrain = [&](std::uint32_t grain) {
         const auto out = Render(system);
         for (std::uint32_t i = 0; i < Grain * 2; ++i) {
-            Require(out[i] == static_cast<float>(pcm[grain * Grain * 2 + i]) / 32768.0f);
+            const auto frame = grain * Grain + i / 2;
+            Require(out[i] == (frame < 3 ? 0.0f : static_cast<float>(pcm[(frame - 3) * 2 + i % 2]) / 32768.0f));
         }
     };
     for (std::uint32_t grain = 0; grain < 3; ++grain) checkGrain(grain);
