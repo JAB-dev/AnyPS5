@@ -293,6 +293,18 @@ static const QueueCase unsupportedCases[] = {
     {"t4000", 0x1000, 48000, 48000, 256, 6, "0:a0[0,300,3,0,300] 0:p 1:a5[1000,64,2,0,64]", 0, "", "", ""},
     {"t4000", 0x1000, 48000, 48000, 256, 6, "0:a0[0,300,3,0,300] 0:p 2:a4[1000,64,2,0,64]", 0, "", "", ""},
     {"t4000", 0x1000, 48000, 48000, 256, 5, "0:a0[0,64,4294967295,0,64] 0:p 1:a4[1000,64,2,0,64]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a4[]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,1000,0,0,1000;3000,1000,0,0,1000]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,1000,0,10,990]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,1000,0,0,0]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,0,0,0,1000]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a5[2000,1000,0,0,1000] 1:a1[3000,100,0,0,100]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,1000,0,0,1000] 1:P", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 4, "0:a0[0,1000,0,0,1000] 0:p 1:a5[2000,1000,0,0,1000] 2:a3[3000,100,0,0,100]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 3, "0:a1[0,10,0,0,10;10,10,0,0,10;20,10,0,0,10] 0:p 1:a1[30,10,0,0,10;40,10,0,0,10]", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 2, "0:a0[0,0,4294967295,0,10] 0:p", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 32, 4, "0:a0[0,1000,0,0,1000] 0:p 1:P", 0, "", "", ""},
+    {"t4000", 0x1000, 48000, 48000, 256, 4, "0:a0[0,256,0,0,256] 0:p 1:a4[2000,1000,0,0,1000]", 0, "", "", ""},
 };
 
 struct QueueOp {
@@ -367,7 +379,7 @@ static std::string Join(const std::vector<std::uint64_t>& values, bool hex) {
     return text;
 }
 
-static uintptr_t CustomSampler(uintptr_t system) {
+static uintptr_t CustomSampler(uintptr_t system, std::uint32_t blocks) {
     Ngs2CustomSamplerRackOption option{};
     auto& common = option.custom_rack_option.rack_option;
     common.size = sizeof(option);
@@ -377,7 +389,7 @@ static uintptr_t CustomSampler(uintptr_t system) {
     common.max_ports = 1;
     option.custom_rack_option.num_buffers = 1;
     option.max_channel_works = 1;
-    option.max_waveform_blocks = 4;
+    option.max_waveform_blocks = blocks;
     Ngs2ContextBufferInfo query{};
     Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_CUSTOM_SAMPLER, &common, &query) == SCE_NGS2_OK);
     const auto info = Buffer(query);
@@ -398,7 +410,7 @@ static int Send(uintptr_t voice, bool custom, const QueueOp& op, const std::vect
         Ngs2SamplerVoicePitchParam param{{sizeof(Ngs2SamplerVoicePitchParam), 0, custom ? SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH : SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH}, ratio};
         return sceNgs2VoiceControl(voice, &param.header);
     }
-    const std::uint32_t event = op.kind == 'p' ? SCE_NGS2_VOICE_EVENT_PLAY : op.kind == 'P' ? SCE_NGS2_VOICE_EVENT_PAUSE : SCE_NGS2_VOICE_EVENT_RESUME;
+    const std::uint32_t event = op.kind == 'p' ? SCE_NGS2_VOICE_EVENT_PLAY : op.kind == 'P' ? SCE_NGS2_VOICE_EVENT_PAUSE : op.kind == 's' ? SCE_NGS2_VOICE_EVENT_STOP : SCE_NGS2_VOICE_EVENT_RESUME;
     Ngs2VoiceEventParam param{{sizeof(Ngs2VoiceEventParam), 0, SCE_NGS2_VOICE_PARAM_EVENT}, event};
     return sceNgs2VoiceControl(voice, &param.header);
 }
@@ -433,7 +445,7 @@ static bool RunCase(const QueueCase& queueCase) {
     const QueueSystem system;
     Require(sceNgs2SystemSetGrainSamples(system.handle, queueCase.grain) == SCE_NGS2_OK && sceNgs2SystemSetSampleRate(system.handle, queueCase.systemRate) == SCE_NGS2_OK);
     const auto master = Mastering(system.handle, 1);
-    const auto voice = custom ? CustomSampler(system.handle) : Voice(CreateRack(system.handle, SCE_NGS2_RACK_ID_SAMPLER));
+    const auto voice = custom ? CustomSampler(system.handle, 4) : Voice(CreateRack(system.handle, SCE_NGS2_RACK_ID_SAMPLER));
     Ngs2SamplerVoiceSetupParam setup{{sizeof(Ngs2SamplerVoiceSetupParam), 0, custom ? SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_SETUP : SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP},
                                      {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, queueCase.rate, 0, 0, 0}};
     Require(sceNgs2VoiceControl(voice, &setup.header) == SCE_NGS2_OK);
@@ -496,8 +508,31 @@ static void TestUnsupportedQueues() {
     }
 }
 
+static void TestStopDropsReset() {
+    const QueueCase stopped{"t4000", 0x1000, 48000, 48000, 256, 4, "0:a0[0,1000,0,0,1000] 0:p 1:a4[2000,1000,0,0,1000] 1:s 2:a4[0,500,0,0,500] 2:p", 0, "", "", ""};
+    RunCase(stopped);
+}
+
+static void TestNoWaveformBlocks() {
+    const QueueSystem system;
+    const auto voice = CustomSampler(system.handle, 0);
+    Ngs2SamplerVoiceSetupParam setup{{sizeof(Ngs2SamplerVoiceSetupParam), 0, SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_SETUP}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}};
+    Require(sceNgs2VoiceControl(voice, &setup.header) == SCE_NGS2_OK);
+    const auto ops = Ops("0:a0[0,100,0,0,100]");
+    const auto pcm = Source("t100");
+    bool unsupported = false;
+    try {
+        Send(voice, true, ops[0], pcm);
+    } catch (const std::runtime_error&) {
+        unsupported = true;
+    }
+    Require(unsupported);
+}
+
 int main() {
     TestMeasuredQueues();
     TestUnsupportedQueues();
+    TestStopDropsReset();
+    TestNoWaveformBlocks();
     return 0;
 }
