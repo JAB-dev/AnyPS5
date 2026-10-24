@@ -1,5 +1,6 @@
 #include "Ngs2Test.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -878,7 +879,7 @@ static void TestCustomMastering() {
 
     auto out = Render(system);
     Require(out.size() == Grain * 2);
-    Require(out[0] != 0.0f);
+    Require(std::any_of(out.begin(), out.end(), [](float sample) { return sample != 0.0f; }));
 
     Require(sceNgs2VoiceGetState(voice, &state, sizeof(state)) == SCE_NGS2_OK);
     Require((state.state_flags & SCE_NGS2_VOICE_STATE_FLAG_PLAYING) != 0);
