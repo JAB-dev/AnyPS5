@@ -168,6 +168,7 @@ struct Ngs2Voice {
     bool starving = false;
     bool inUse = false;
     bool clearPending = false;
+    bool inCallback = false;
     bool acceptsBlocks = true;
     std::uint64_t decodedSamples = 0;
     std::uint64_t decodedBytes = 0;

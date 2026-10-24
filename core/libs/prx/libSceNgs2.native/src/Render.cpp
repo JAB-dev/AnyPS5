@@ -103,49 +103,20 @@ static void ApplyPause(Ngs2Voice& voice) {
     else if (voice.pause == Ngs2Pause::FadeIn) voice.pause = Ngs2Pause::None;
 }
 
-static bool ConsumeSamples(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t systemRate) {
-    if (voice.clearPending) Ngs2ApplyPendingClear(voice);
-    ApplyPause(voice);
-    const bool fadeOut = voice.ran == Ngs2Pause::FadeOut;
-    const bool fadeIn = voice.ran == Ngs2Pause::FadeIn;
-    if ((fadeOut || fadeIn) && grain < FADE_FRAMES) throw std::runtime_error("NGS2: a PAUSE or RESUME fade over a " + std::to_string(grain) + "-frame grain is not implemented");
-    const bool audible = voice.ran == Ngs2Pause::None || fadeOut || fadeIn;
-    const auto step = voice.ran == Ngs2Pause::Frozen ? 0 : SamplerStep(voice, systemRate);
-    const float* kernel = Kernel();
-    for (std::uint32_t frame = 0; frame < grain && audible; frame++) {
-        const auto index = static_cast<std::int64_t>(voice.position >> NGS2_POSITION_BITS);
-        const auto phase = static_cast<std::uint32_t>((voice.position >> (NGS2_POSITION_BITS - PHASE_BITS)) & (KERNEL_PHASES - 1));
-        const std::uint8_t* taps[4];
-        for (int tap = 0; tap < 4; tap++) taps[tap] = Ngs2PcmFrame(voice, index - 4 + tap);
-        for (std::uint32_t channel = 0; channel < voice.channels; channel++) {
-            const float history[4] = {ReadPcm(taps[0], channel), ReadPcm(taps[1], channel), ReadPcm(taps[2], channel), ReadPcm(taps[3], channel)};
-            float sample = Resample(history, kernel, phase);
-            if (fadeOut && frame >= grain - FADE_FRAMES) sample = sample * (static_cast<float>(grain - frame) / FADE_FRAMES);
-            if (fadeIn && frame < FADE_FRAMES) sample = sample * (static_cast<float>(frame) / FADE_FRAMES);
-            voice.samples[channel * grain + frame] = sample;
-        }
-        voice.position += step;
+static bool SignalPasses(Ngs2Voice& voice) {
+    auto limit = std::min(voice.position >> NGS2_POSITION_BITS, voice.total);
+    if (voice.acceptsBlocks && !voice.runs.empty() && limit == voice.total && limit != 0) {
+        const auto& last = voice.runs.back().block;
+        if (last.Pass() < static_cast<std::uint64_t>(last.info.num_skip_samples) + last.info.num_samples) limit--;
     }
-    if (!audible) voice.position += static_cast<std::uint64_t>(step) * grain;
-    voice.hasSamples = audible;
-    voice.renderedSincePlay = true;
-    voice.starving = false;
-    if ((voice.position >> NGS2_POSITION_BITS) <= voice.total) return false;
-    if (!voice.acceptsBlocks) return true;
-    voice.starving = true;
-    voice.position = ((voice.total + PARK_FRAMES) << NGS2_POSITION_BITS) | (voice.position & POSITION_FRACTION);
-    return false;
-}
-
-static void SignalPasses(Ngs2Voice& voice) {
-    const auto decoded = std::min(voice.position >> NGS2_POSITION_BITS, voice.total);
+    if (limit <= voice.signalledTo) return true;
     std::vector<Ngs2VoiceCallbackInfo> infos;
     for (const auto& run : voice.runs) {
         if (run.length == 0) continue;
         const auto first = voice.signalledTo < run.start ? 0 : (voice.signalledTo - run.start) / run.length;
         for (auto pass = first; run.passes == 0 || pass < run.passes; pass++) {
             const auto end = run.start + (pass + 1) * run.length;
-            if (end > decoded) break;
+            if (end > limit) break;
             if (end <= voice.signalledTo) continue;
             const bool repeat = run.passes == 0 || pass + 1 < run.passes;
             infos.push_back({
@@ -162,14 +133,65 @@ static void SignalPasses(Ngs2Voice& voice) {
             });
         }
     }
-    voice.signalledTo = std::max(voice.signalledTo, decoded);
+    voice.signalledTo = limit;
     const auto revision = voice.waveformRevision;
     for (const auto& info : infos) {
-        if (voice.callback == nullptr || voice.waveformRevision != revision) return;
+        if (voice.callback == nullptr) return true;
         if ((voice.callbackFlags & info.flag) == 0) continue;
-        const Ngs2Unlocked unlocked;
-        voice.callback(&info);
+        voice.decodedSamples = Ngs2PcmDecoded(voice);
+        voice.decodedBytes = Ngs2PcmDecodedBytes(voice);
+        voice.inCallback = true;
+        try {
+            const Ngs2Unlocked unlocked;
+            voice.callback(&info);
+        } catch (...) {
+            voice.inCallback = false;
+            throw;
+        }
+        voice.inCallback = false;
+        if (voice.waveformRevision != revision || voice.state != Ngs2PlayState::Playing) return false;
     }
+    return true;
+}
+
+static bool ConsumeSamples(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t systemRate) {
+    if (voice.clearPending) Ngs2ApplyPendingClear(voice);
+    ApplyPause(voice);
+    const bool fadeOut = voice.ran == Ngs2Pause::FadeOut;
+    const bool fadeIn = voice.ran == Ngs2Pause::FadeIn;
+    if ((fadeOut || fadeIn) && grain < FADE_FRAMES) throw std::runtime_error("NGS2: a PAUSE or RESUME fade over a " + std::to_string(grain) + "-frame grain is not implemented");
+    const bool audible = voice.ran == Ngs2Pause::None || fadeOut || fadeIn;
+    const auto step = voice.ran == Ngs2Pause::Frozen ? 0 : SamplerStep(voice, systemRate);
+    const float* kernel = Kernel();
+    bool running = true;
+    for (std::uint32_t frame = 0; frame < grain && audible && running; frame++) {
+        const auto index = static_cast<std::int64_t>(voice.position >> NGS2_POSITION_BITS);
+        const auto phase = static_cast<std::uint32_t>((voice.position >> (NGS2_POSITION_BITS - PHASE_BITS)) & (KERNEL_PHASES - 1));
+        const std::uint8_t* taps[4];
+        for (int tap = 0; tap < 4; tap++) taps[tap] = Ngs2PcmFrame(voice, index - 4 + tap);
+        for (std::uint32_t channel = 0; channel < voice.channels; channel++) {
+            const float history[4] = {ReadPcm(taps[0], channel), ReadPcm(taps[1], channel), ReadPcm(taps[2], channel), ReadPcm(taps[3], channel)};
+            float sample = Resample(history, kernel, phase);
+            if (fadeOut && frame >= grain - FADE_FRAMES) sample = sample * (static_cast<float>(grain - frame) / FADE_FRAMES);
+            if (fadeIn && frame < FADE_FRAMES) sample = sample * (static_cast<float>(frame) / FADE_FRAMES);
+            voice.samples[channel * grain + frame] = sample;
+        }
+        voice.position += step;
+        running = SignalPasses(voice);
+    }
+    if (!audible) {
+        voice.position += static_cast<std::uint64_t>(step) * grain;
+        running = SignalPasses(voice);
+    }
+    voice.hasSamples = audible;
+    voice.renderedSincePlay = true;
+    voice.starving = false;
+    if (!running) return false;
+    if ((voice.position >> NGS2_POSITION_BITS) <= voice.total) return false;
+    if (!voice.acceptsBlocks) return true;
+    voice.starving = true;
+    voice.position = ((voice.total + PARK_FRAMES) << NGS2_POSITION_BITS) | (voice.position & POSITION_FRACTION);
+    return false;
 }
 
 static bool Bypasses(const Ngs2Filter& filter, std::uint32_t channel) {
@@ -221,7 +243,6 @@ static void RenderSampler(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t s
             const bool playing = voice.state == Ngs2PlayState::Playing;
             voice.decodedSamples = playing || voice.rack->rackId != SCE_NGS2_RACK_ID_SAMPLER ? Ngs2PcmDecoded(voice) : 0;
             voice.decodedBytes = playing ? Ngs2PcmDecodedBytes(voice) : 0;
-            SignalPasses(voice);
         }
     }
     if (voice.channels != channels) {
