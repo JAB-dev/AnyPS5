@@ -102,12 +102,13 @@ static void TestEffectAndIndependentVoices() {
     Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &block});
     Patch(sampler, first);
     Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    const auto expected = [](std::size_t i, bool sounding) { return i % 2 == 0 ? (sounding ? 0.375f : 0.125f) : (sounding ? 0.125f : 0.25f); };
     const auto mixed = Render(system, 2);
-    for (std::size_t i = 0; i < mixed.size(); ++i) Require(mixed[i] == (i % 2 == 0 ? 0.375f : 0.125f));
-    Require(firstState.calls == 1 && secondState.calls == 1 && Flags(sampler) == 0);
+    for (std::size_t i = 0; i < mixed.size(); ++i) Require(mixed[i] == expected(i, i / 2 >= 3));
+    Require(firstState.calls == 1 && secondState.calls == 1 && Flags(sampler) == (SCE_NGS2_VOICE_STATE_FLAG_INUSE | SCE_NGS2_VOICE_STATE_FLAG_PLAYING));
     const auto tail = Render(system, 2);
-    for (std::size_t i = 0; i < tail.size(); ++i) Require(tail[i] == (i % 2 == 0 ? 0.125f : 0.25f));
-    Require(firstState.calls == 2 && secondState.calls == 2);
+    for (std::size_t i = 0; i < tail.size(); ++i) Require(tail[i] == expected(i, i / 2 < 3));
+    Require(firstState.calls == 2 && secondState.calls == 2 && Flags(sampler) == 0);
     Require(sceNgs2SystemDestroy(system, nullptr) == 0);
 }
 

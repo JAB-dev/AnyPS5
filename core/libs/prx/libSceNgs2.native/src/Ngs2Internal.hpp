@@ -124,6 +124,9 @@ struct Ngs2Voice {
     std::unique_ptr<Ngs2ReverbState, Ngs2ReverbDeleter> reverb;
     float pitch = 1.0f;
     std::uint64_t phase = 0;
+    std::uint64_t pendingFrames = 0;
+    bool pastEnd = false;
+    std::array<std::array<float, 4>, NGS2_MAX_CHANNELS> history{};
     std::deque<Ngs2Block> blocks;
     bool acceptsBlocks = true;
     std::uint64_t decodedSamples = 0;
@@ -152,6 +155,7 @@ struct Ngs2Voice {
 
     void SetEvent(std::uint32_t eventId);
     void ResetSetup();
+    void ResetPosition();
     const std::uint8_t* WaveformData() const;
 };
 

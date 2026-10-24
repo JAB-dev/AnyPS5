@@ -20,6 +20,13 @@ static constexpr std::uint8_t COMMAND_TYPE_UINT = 4;
 static constexpr std::uint8_t COMMAND_TYPE_FLOAT_ARRAY = 0x11;
 static constexpr float MAX_MATRIX_LEVEL = 4.0f;
 
+void Ngs2Voice::ResetPosition() {
+    phase = 0;
+    pendingFrames = 0;
+    pastEnd = false;
+    history = {};
+}
+
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
@@ -60,7 +67,7 @@ void Ngs2Voice::ResetSetup() {
     waveformType = 0;
     atrac9 = {};
     pitch = 1.0f;
-    phase = 0;
+    ResetPosition();
     blocks.clear();
     acceptsBlocks = true;
     decodedSamples = 0;
@@ -221,7 +228,7 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
     if (reset) {
         ++voice.waveformRevision;
         voice.blocks.clear();
-        voice.phase = 0;
+        voice.ResetPosition();
         voice.waveformEnd = nullptr;
         if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) Ngs2RestartAtrac9(voice);
     }
@@ -312,7 +319,7 @@ static void ApplySamplerParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& para
         case SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH:
         case SCE_NGS2_CUSTOM_SAMPLER_VOICE_PARAM_PITCH: {
             const float ratio = ParamAs<Ngs2SamplerVoicePitchParam>(param).ratio;
-            if (!std::isfinite(ratio) || ratio < 0.0f) APS5_INVALID_ARG_EX;
+            if ((voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 || voice.waveformType == 0) && (!std::isfinite(ratio) || ratio < 0.0f)) APS5_INVALID_ARG_EX;
             voice.pitch = ratio;
             break;
         }
