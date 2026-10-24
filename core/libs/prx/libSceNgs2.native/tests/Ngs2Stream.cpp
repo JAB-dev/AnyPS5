@@ -518,7 +518,7 @@ static void TestBlockQueue() {
 
     chain = QueueVoice(0);
     Require(AddBlocks(chain.voice, 0, 4, continued) == SCE_NGS2_OK);
-    Require(Throws([&] { AddBlocks(chain.voice, 0, 5, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET | continued); }));
+    for (std::uint32_t count : {1u, 5u}) Require(Throws([&] { AddBlocks(chain.voice, 0, count, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET | continued); }));
     const Ngs2WaveformBlock looping{0, Grain * 2, 1, 0, Grain, 0, 0};
     const Ngs2SamplerVoiceWaveformBlocksParam loop{{sizeof(Ngs2SamplerVoiceWaveformBlocksParam), 0, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS}, Blocks.data(), continued, 1, &looping};
     Require(Throws([&] { sceNgs2VoiceControl(chain.voice, &loop.header); }));
