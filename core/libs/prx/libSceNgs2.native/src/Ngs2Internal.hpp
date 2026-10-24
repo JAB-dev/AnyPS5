@@ -126,6 +126,7 @@ struct Ngs2Voice {
     std::uint64_t phase = 0;
     std::deque<Ngs2Block> blocks;
     bool acceptsBlocks = true;
+    bool onlyData = false;
     std::uint64_t decodedSamples = 0;
     std::uint64_t decodedBytes = 0;
     std::uint64_t waveformRevision = 0;
@@ -164,6 +165,7 @@ struct Ngs2Rack {
     std::uint32_t maxFilters = 0;
     std::uint32_t maxGrainSamples = 0;
     std::uint32_t maxChannelWorks = 0;
+    std::uint32_t maxWaveformBlocks = 0;
     std::uint32_t maxInputs = 0;
     std::uintptr_t userData = 0;
     Ngs2ContextBufferInfo bufferInfo{};

@@ -11,6 +11,8 @@
 #include "prx/libc/include/General.hpp"
 #include "Ngs2Internal.hpp"
 
+static constexpr std::uint32_t MAX_WAVEFORM_BLOCKS = 32;
+
 union RackOptions {
     Ngs2RackOption common;
     Ngs2SamplerRackOption sampler;
@@ -112,6 +114,9 @@ static int CheckedRackOption(std::uint32_t rackId, const Ngs2RackOption* option,
         }
         throw std::invalid_argument("NGS2: invalid rack voice or channel count");
     }
+    if (rackId == SCE_NGS2_RACK_ID_SAMPLER && (options.sampler.max_waveform_blocks == 0 || options.sampler.max_waveform_blocks > MAX_WAVEFORM_BLOCKS)) {
+        return SCE_NGS2_ERROR_INVALID_NUM_WAVEFORM_BLOCKS;
+    }
     if (rackId == SCE_NGS2_RACK_ID_REVERB && options.reverb.reverb_size != 1) {
         throw std::runtime_error("NGS2: reverb rack size " + std::to_string(options.reverb.reverb_size) + " is not implemented");
     }
@@ -135,6 +140,7 @@ static int CreateRack(Ngs2Handle systemHandle, std::uint32_t rackId, const RackO
     rack->name[sizeof(rack->name) - 1] = '\0';
     rack->maxGrainSamples = options.common.max_grain_samples;
     if (rackId == SCE_NGS2_RACK_ID_SAMPLER) rack->maxChannelWorks = options.sampler.max_channel_works;
+    if (rackId == SCE_NGS2_RACK_ID_SAMPLER) rack->maxWaveformBlocks = options.sampler.max_waveform_blocks;
     if (rackId == SCE_NGS2_RACK_ID_CUSTOM_SAMPLER) rack->maxChannelWorks = options.customSampler.max_channel_works;
     if (rackId == SCE_NGS2_RACK_ID_SUBMIXER) rack->maxInputs = options.submixer.max_inputs;
     if (rackId == SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER) rack->maxInputs = options.customSubmixer.max_inputs;
