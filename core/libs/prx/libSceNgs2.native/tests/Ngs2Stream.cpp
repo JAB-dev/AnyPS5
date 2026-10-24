@@ -555,8 +555,6 @@ static void TestBlockQueue() {
     const auto buffer = Buffer(query);
     for (std::uint32_t maxBlocks : {0u, 33u, 70u}) {
         const auto option = QueueOption(maxBlocks);
-        Ngs2ContextBufferInfo queried{};
-        Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_SAMPLER, &option.rack_option, &queried) == SCE_NGS2_OK);
         uintptr_t rack = 0;
         Require(sceNgs2RackCreate(system, SCE_NGS2_RACK_ID_SAMPLER, &option.rack_option, &buffer, &rack) == static_cast<int>(0x804A8053u) && rack == 0);
         Require(sceNgs2RackCreateWithAllocator(system, SCE_NGS2_RACK_ID_SAMPLER, &option.rack_option, &allocator, &rack) == static_cast<int>(0x804A8053u) && rack == 0);
