@@ -37,6 +37,10 @@ std::uint64_t Ngs2PcmBlock::Pass() const {
     return empty ? 0 : std::min<std::uint64_t>(static_cast<std::uint64_t>(info.num_skip_samples) + info.num_samples, Frames());
 }
 
+bool Ngs2Voice::InCallback() const {
+    return callbackThread == std::this_thread::get_id();
+}
+
 bool Ngs2Voice::Pcm() const {
     return waveformType == SCE_NGS2_WAVEFORM_TYPE_PCM_I16L;
 }
@@ -184,18 +188,18 @@ static void PlayPcm(Ngs2Voice& voice) {
 static bool SetPcmEvent(Ngs2Voice& voice, std::uint32_t eventId) {
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
-            if (voice.inCallback && voice.state == Ngs2PlayState::Playing) throw std::runtime_error("NGS2: PLAY from a block callback of a playing PCM sampler voice is not implemented");
+            if (voice.InCallback() && voice.state == Ngs2PlayState::Playing) throw std::runtime_error("NGS2: PLAY from a block callback of a playing PCM sampler voice is not implemented");
             PlayPcm(voice);
             if (voice.userFxHandler) voice.userFxFlags = 1;
             return true;
         case SCE_NGS2_VOICE_EVENT_PAUSE:
-            if (voice.inCallback && voice.state == Ngs2PlayState::Playing) throw std::runtime_error("NGS2: PAUSE from a block callback of a playing PCM sampler voice is not implemented");
+            if (voice.InCallback() && voice.state == Ngs2PlayState::Playing) throw std::runtime_error("NGS2: PAUSE from a block callback of a playing PCM sampler voice is not implemented");
             if (voice.state != Ngs2PlayState::Playing || voice.pause != Ngs2Pause::None) return true;
             if (voice.clearPending) throw std::runtime_error("NGS2: PAUSE after a RESET add on a playing PCM sampler voice is not implemented");
             voice.pausePending = true;
             return true;
         case SCE_NGS2_VOICE_EVENT_RESUME:
-            if (voice.inCallback && (voice.pausePending || voice.pause != Ngs2Pause::None)) throw std::runtime_error("NGS2: RESUME from a block callback of a paused PCM sampler voice is not implemented");
+            if (voice.InCallback() && (voice.pausePending || voice.pause != Ngs2Pause::None)) throw std::runtime_error("NGS2: RESUME from a block callback of a paused PCM sampler voice is not implemented");
             if (voice.pausePending) voice.pausePending = false;
             else if (voice.pause == Ngs2Pause::Silent || voice.pause == Ngs2Pause::Frozen) voice.pause = Ngs2Pause::FadeIn;
             return true;
@@ -429,7 +433,7 @@ static void AddPcmBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksP
     }
     if (voice.slots.empty()) voice.slots.resize(capacity);
     if ((param.flags & SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET) != 0) {
-        if (voice.inCallback && voice.state == Ngs2PlayState::Playing) throw std::runtime_error("NGS2: a RESET add from a block callback of a playing PCM sampler voice is not implemented");
+        if (voice.InCallback() && voice.state == Ngs2PlayState::Playing) throw std::runtime_error("NGS2: a RESET add from a block callback of a playing PCM sampler voice is not implemented");
         ++voice.waveformRevision;
         if (voice.state == Ngs2PlayState::Playing) {
             if (voice.pausePending || voice.pause != Ngs2Pause::None) throw std::runtime_error("NGS2: a RESET add on a paused PCM sampler voice is not implemented");

@@ -473,6 +473,25 @@ static void TestPcmCallbackEvents() {
     }
 }
 
+static void APS5_VABI PlayFromAnotherThread(const Ngs2VoiceCallbackInfo* info) {
+    auto& calls = *reinterpret_cast<int*>(info->callback_data);
+    if (++calls != 1) return;
+    std::thread([info] { Event(info->voice_handle, SCE_NGS2_VOICE_EVENT_PLAY); }).join();
+}
+
+static void TestPcmCallbackOtherThread() {
+    const auto system = CreateSystem();
+    const std::vector<std::int16_t> pcm(Grain - 2, 16384);
+    const auto sampler = Sampler(system, pcm, 0);
+    Patch(sampler, Mastering(system, 1));
+    int calls = 0;
+    Control(sampler, SCE_NGS2_VOICE_PARAM_CALLBACK, Ngs2VoiceCallbackParam{{}, PlayFromAnotherThread, reinterpret_cast<std::uintptr_t>(&calls), SCE_NGS2_VOICE_CALLBACK_FLAG_BLOCK_END, 0});
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    RenderI16(system);
+    Require(calls >= 1);
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+}
+
 struct PcmSetupCallback {
     uintptr_t master;
     std::uint32_t channels;
@@ -2154,6 +2173,7 @@ int main() {
     TestPcmCallbackReset();
     TestPcmCallbackRefill();
     TestPcmCallbackEvents();
+    TestPcmCallbackOtherThread();
     TestPcmCallbackSetup();
     TestSetupClearsCallback();
     TestMasteringGain();

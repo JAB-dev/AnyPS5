@@ -141,15 +141,15 @@ static bool SignalPasses(Ngs2Voice& voice) {
         if ((voice.callbackFlags & info.flag) == 0) continue;
         voice.decodedSamples = Ngs2PcmDecoded(voice);
         voice.decodedBytes = Ngs2PcmDecodedBytes(voice);
-        voice.inCallback = true;
+        voice.callbackThread = std::this_thread::get_id();
         try {
             const Ngs2Unlocked unlocked;
             voice.callback(&info);
         } catch (...) {
-            voice.inCallback = false;
+            voice.callbackThread = {};
             throw;
         }
-        voice.inCallback = false;
+        voice.callbackThread = {};
         if (voice.waveformRevision != revision || voice.state != Ngs2PlayState::Playing) return false;
     }
     return true;

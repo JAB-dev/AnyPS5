@@ -168,7 +168,7 @@ struct Ngs2Voice {
     bool starving = false;
     bool inUse = false;
     bool clearPending = false;
-    bool inCallback = false;
+    std::thread::id callbackThread{};
     bool acceptsBlocks = true;
     std::uint64_t decodedSamples = 0;
     std::uint64_t decodedBytes = 0;
@@ -197,6 +197,7 @@ struct Ngs2Voice {
     void SetEvent(std::uint32_t eventId);
     void ResetSetup();
     bool Pcm() const;
+    bool InCallback() const;
     const std::uint8_t* WaveformData() const;
 };
 
