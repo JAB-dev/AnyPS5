@@ -1256,9 +1256,9 @@ struct WriteTracker {
         return false;
     }
 
-    bool rangeUnchanged(std::uint64_t address, std::size_t bytes, std::uint64_t since) const {
+    bool rangeUnchanged(std::uint64_t address, std::size_t bytes, std::uint64_t since, bool walked = true) const {
         if (refusedSince(address, address + bytes, since)) return false;
-        return unchanged(blockOf(address), blockOf(address + bytes - 1), since) || !storedOver(address, address + bytes, since, true);
+        return unchanged(blockOf(address), blockOf(address + bytes - 1), since) || !storedOver(address, address + bytes, since, walked);
     }
 
     bool cpuUnchanged(std::uint64_t address, std::size_t bytes, std::uint64_t generation) const {
@@ -1934,20 +1934,20 @@ bool UnchangedCommittedSince(std::span<const std::pair<std::uint64_t, std::uint6
     return true;
 }
 
-std::uint64_t storeOwn(std::uint64_t address, std::size_t bytes, const std::function<std::pair<std::uint64_t, std::uint64_t>()>& store) {
+std::uint64_t storeOwn(std::uint64_t address, std::size_t bytes, const std::function<std::pair<std::uint64_t, std::uint64_t>()>& store, bool complete = true) {
     if (bytes == 0) return 0;
     BreakProofs();
-    const auto stampStored = [](WriteTracker& tracker, std::pair<std::uint64_t, std::uint64_t> stored) -> std::uint64_t {
+    const auto stampStored = [complete](WriteTracker& tracker, std::pair<std::uint64_t, std::uint64_t> stored) -> std::uint64_t {
         if (stored.second <= stored.first) return 0;
         ++tracker.generation;
         if (!tracker.watched || !tracker.covers(stored.first, static_cast<std::size_t>(stored.second - stored.first))) {
             tracker.noteUnstampedStore(stored.first, stored.second);
-            if (tracker.watched) tracker.stampWatchedPart(stored.first, stored.second, tracker.generation, true);
+            if (tracker.watched) tracker.stampWatchedPart(stored.first, stored.second, tracker.generation, complete);
             return 0;
         }
         for (auto block = tracker.blockOf(stored.first); block <= tracker.blockOf(stored.second - 1); ++block) {
             tracker.stamp(block, tracker.generation, StampKind::Driver);
-            tracker.noteDriverStore(block, stored.first, stored.second, tracker.generation, true);
+            tracker.noteDriverStore(block, stored.first, stored.second, tracker.generation, complete);
         }
         return tracker.generation;
     };
@@ -2150,7 +2150,7 @@ bool UnchangedSinceLastCollect(std::uint64_t address, std::size_t bytes, std::ui
     const auto lock = lockTracker(tracker);
     tracker.initialize();
     if (!tracker.watched || generation == 0u || !tracker.covers(address, bytes)) return false;
-    return tracker.cpuUnchanged(address, bytes, generation) && tracker.rangeUnchanged(address, bytes, generation);
+    return tracker.cpuUnchanged(address, bytes, generation) && tracker.rangeUnchanged(address, bytes, generation, false);
 }
 
 bool WrittenSince(std::uint64_t address, std::size_t bytes, std::uint64_t generation) {
@@ -2733,7 +2733,7 @@ void WriteChanged(std::uint64_t address, std::span<const std::byte> current, std
             lastChanged = std::max(lastChanged, at + 1);
         }
         return firstChanged < lastChanged ? std::pair<std::uint64_t, std::uint64_t>{address + firstChanged, address + lastChanged} : std::pair<std::uint64_t, std::uint64_t>{0, 0};
-    });
+    }, false);
 }
 
 void Write(std::uint64_t address, std::span<const std::byte> source, std::size_t alignment) {

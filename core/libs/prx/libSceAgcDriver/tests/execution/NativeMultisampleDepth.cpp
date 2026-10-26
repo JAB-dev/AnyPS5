@@ -28,10 +28,12 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -655,10 +657,37 @@ std::array<std::uint32_t, 8> DepthSampleWords(const DepthTarget& target) {
     return {static_cast<std::uint32_t>(base), static_cast<std::uint32_t>((base >> 32u) & 255u) | (format << 20u) | ((width & 3u) << 30u), (width >> 2u) | (height << 14u), (14u << 28u) | (24u << 20u) | (count << 16u) | 0x204u, 0u, count << 4u, (target.iterate256 ? 1u << 10u : 0u) | (target.htilePipeAligned ? 1u << 19u : 0u) | (1u << 21u) | (static_cast<std::uint32_t>(metadata & 255u) << 24u), static_cast<std::uint32_t>(metadata >> 8u)};
 }
 
-enum class PublicationWrite { None, Pages, Queued, PaddingSameValue, Completion, Concurrent, SameDepth, SameStencil, SameHtile, ChangedHull, Possible, ImportSameValue };
+enum class PublicationWrite { None, Pages, Queued, PaddingSameValue, Completion, Concurrent, CopyRace, Retired, ColorAcquisition, DrawAlias, DrawPending, DriverSameDepth, DriverSameStencil, DriverSameHtile, SameDepth, SameStencil, SameHtile, ChangedHull, Possible, ImportSameValue };
 enum class PublicationUnmap { None, Middle, Head, Tail, EmptyDepth, EmptyStencil, EmptyHtile, Remap, Inaccessible };
-enum class PublicationClear { None, Clear, Redraw };
+enum class PublicationClear { None, Clear, Redraw, Different, Stencil, StencilRedraw, StencilSameRedraw, QueuedStencilRedraw };
 std::barrier<>* publicationReadBarrier = nullptr;
+std::function<void(DepthPublicationStage)> publicationAction;
+
+struct PublicationHookScope {
+    explicit PublicationHookScope(std::function<void(DepthPublicationStage)> action) {
+        publicationAction = std::move(action);
+        SetDepthPublicationHookForTest(+[](DepthPublicationStage stage) { publicationAction(stage); });
+    }
+    ~PublicationHookScope() { SetDepthPublicationHookForTest(nullptr); publicationAction = {}; }
+};
+
+class PublicationTimeout {
+public:
+    PublicationTimeout() : watcher([this] {
+        std::unique_lock lock(mutex);
+        if (!condition.wait_for(lock, std::chrono::seconds(5), [this] { return finished; })) std::_Exit(1);
+    }) {}
+    ~PublicationTimeout() {
+        std::lock_guard lock(mutex);
+        finished = true;
+        condition.notify_one();
+    }
+private:
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool finished = false;
+    std::jthread watcher;
+};
 
 void CheckDepthPublication(Context context, std::uint32_t samples, PublicationWrite write, bool depthOnly, PublicationUnmap unmap = PublicationUnmap::None, PublicationClear clear = PublicationClear::None, std::unique_lock<AgcDriver::GuestMemory::GpuMutexType>* gpuLock = nullptr) {
     constexpr VkExtent2D extent{129u, 3u};
@@ -682,19 +711,42 @@ void CheckDepthPublication(Context context, std::uint32_t samples, PublicationWr
     struct Cleanup {
         Recorder& recorder;
         Context context;
-        ~Cleanup() { recorder.Sync(); ClearCachedTextures(context.device); ClearDepthSurfaces(context.device); }
+        ~Cleanup() { recorder.Sync(); ClearCachedTextures(context.device); ClearDepthSurfaces(context.device); ClearMultisampleTargets(context.device); }
     } cleanup{recorder, context};
     const auto view = DepthSurfaceView(context, target);
+    if (write == PublicationWrite::DrawAlias) {
+        ColorTarget color{};
+        color.address = color.surfaceAddress = target.address;
+        color.extent = color.surfaceExtent = extent;
+        color.format = VK_FORMAT_R8_UNORM;
+        color.elementBytes = 1u;
+        color.tileMode = ColorTileMode::RenderTarget;
+        color.samples = samples;
+        color.bytes = extent.width * extent.height;
+        MultisampleTargetView(context, color);
+    }
+    if (write == PublicationWrite::DrawPending) QueueTargetByteWrite(context, recorder, target.address + depthBytes - 1u, std::byte{0x7e});
     NoteDepthSurfaceWrite(context, target);
     raster = std::make_unique<DepthRaster>(context, target, view, StencilUse{VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, 0x20u}, true);
     raster->Run(recorder.Commands(), 0.25f);
+    const bool stencilFill = clear >= PublicationClear::Stencil;
+    const bool redraw = clear == PublicationClear::Redraw || clear == PublicationClear::Different || clear >= PublicationClear::StencilRedraw;
     if (clear != PublicationClear::None) {
         target.clearStencil = 0x33u;
+        if (clear == PublicationClear::StencilSameRedraw) target.clearStencil = 0x5au;
+        if (clear == PublicationClear::Different) target.clearDepth = 1.0f;
         Require(DepthSurfaceView(context, target) == view, "publication clear replaced its native attachment");
-        NoteDepthMetadataFill(target.htileAddress, metadataBytes, 0u);
-        AgcDriver::GuestMemory::StoreOwnBytes(target.htileAddress, metadataBytes, [&] { std::memset(metadata.Data(), 0, metadataBytes); });
+        if (stencilFill) {
+            NoteDepthMetadataFill(target.stencilAddress, stencilBytes, target.clearStencil * 0x01010101u);
+            if (clear == PublicationClear::QueuedStencilRedraw) QueueTargetWordFill(context, recorder, target.stencilAddress, stencilBytes, target.clearStencil * 0x01010101u);
+            else AgcDriver::GuestMemory::StoreOwnBytes(target.stencilAddress, stencilBytes, [&] { std::memset(stencil.Data(), target.clearStencil, stencilBytes); });
+        } else {
+            const std::uint32_t word = clear == PublicationClear::Different ? (depthOnly ? 0xfffffff0u : 0xfffc0000u) : 0u;
+            NoteDepthMetadataFill(target.htileAddress, metadataBytes, word);
+            AgcDriver::GuestMemory::StoreOwnBytes(target.htileAddress, metadataBytes, [&] { for (std::size_t offset = 0u; offset < metadataBytes; offset += 4u) std::memcpy(metadata.Data() + offset, &word, 4u); });
+        }
         Require(DepthSurfaceView(context, target) == view, "publication did not apply its native clear in place");
-        if (clear == PublicationClear::Redraw) {
+        if (redraw) {
             NoteDepthSurfaceWrite(context, target);
             raster->Run(recorder.Commands(), 0.5f);
         }
@@ -702,14 +754,14 @@ void CheckDepthPublication(Context context, std::uint32_t samples, PublicationWr
     std::array<std::vector<std::byte>, 3> expected{
         std::vector<std::byte>(depthBytes, std::byte{0xa5}),
         std::vector<std::byte>(metadataBytes),
-        std::vector<std::byte>(stencilBytes, std::byte{0x5a})
+        std::vector<std::byte>(stencilBytes, static_cast<std::byte>(stencilFill ? target.clearStencil : 0x5a))
     };
     for (std::uint32_t y = 0u; y < extent.height; ++y) {
         for (std::uint32_t x = 0u; x < extent.width; ++x) {
             for (std::uint32_t sample = 0u; sample < samples; ++sample) {
-                const auto value = clear == PublicationClear::Clear ? target.clearDepth : (clear == PublicationClear::Redraw ? 0.5f : 0.25f) + static_cast<float>(sample + 1u) / 16.0f;
+                const auto value = clear == PublicationClear::Clear ? target.clearDepth : (redraw ? 0.5f : 0.25f) + static_cast<float>(sample + 1u) / 16.0f;
                 std::memcpy(expected[0].data() + depthLayout.Offset(x, y, 0u, sample), &value, 4u);
-                expected[2][stencilLayout.Offset(x, y, 0u, sample)] = static_cast<std::byte>(clear == PublicationClear::Clear && !depthOnly ? target.clearStencil : 0x20u + sample);
+                expected[2][stencilLayout.Offset(x, y, 0u, sample)] = static_cast<std::byte>((clear == PublicationClear::Clear && !depthOnly) || clear == PublicationClear::Stencil ? target.clearStencil : 0x20u + sample);
             }
         }
     }
@@ -717,10 +769,6 @@ void CheckDepthPublication(Context context, std::uint32_t samples, PublicationWr
     for (std::size_t offset = 0u; offset < metadataBytes; offset += 4u) std::memcpy(expected[1].data() + offset, &expanded, 4u);
     const std::array addresses{target.address, target.htileAddress, target.stencilAddress};
     const std::array sizes{depthBytes, metadataBytes, stencilBytes};
-    if (clear != PublicationClear::None && write == PublicationWrite::Pages) {
-        std::memset(metadata.Data(), 0x69, metadataBytes);
-        std::fill(expected[1].begin(), expected[1].end(), std::byte{0x69});
-    }
     if (write == PublicationWrite::Pages) {
         for (std::size_t index = 0u; index < addresses.size(); ++index) {
             const auto first = index == 1u ? 0u : 4096u;
@@ -759,6 +807,14 @@ void CheckDepthPublication(Context context, std::uint32_t samples, PublicationWr
         for (std::size_t index = 0u; index < addresses.size(); ++index) Require(std::equal(before[index].begin(), before[index].end(), reinterpret_cast<const std::byte*>(addresses[index])), "completion publication changed guest bytes");
     }
     const auto sampleOffset = depthLayout.Offset(0u, 0u, 0u, 0u);
+    if (write >= PublicationWrite::DriverSameDepth && write <= PublicationWrite::DriverSameHtile) {
+        const auto index = write == PublicationWrite::DriverSameDepth ? 0u : write == PublicationWrite::DriverSameStencil ? 2u : 1u;
+        const auto offset = index == 0u ? sampleOffset : index == 2u ? stencilLayout.Offset(0u, 0u, 0u, 0u) : 0u;
+        const auto address = addresses[index] + offset;
+        const auto value = *reinterpret_cast<const std::byte*>(address);
+        AgcDriver::GuestMemory::StoreOwnBytes(address, std::span(&value, 1u));
+        expected[index][offset] = value;
+    }
     if (write == PublicationWrite::SameDepth) *reinterpret_cast<volatile std::byte*>(target.address + sampleOffset) = std::byte{0xa5};
     if (write == PublicationWrite::SameStencil) *reinterpret_cast<volatile std::byte*>(target.stencilAddress + stencilLayout.Offset(0u, 0u, 0u, 0u)) = std::byte{0x5a};
     if (write == PublicationWrite::SameHtile) *reinterpret_cast<volatile std::byte*>(target.htileAddress) = std::byte{0};
@@ -834,7 +890,62 @@ void CheckDepthPublication(Context context, std::uint32_t samples, PublicationWr
         }
         Require(DepthSurfaceAt(target.address), "partial unmap prematurely retired the native depth owner");
     }
-    if (write >= PublicationWrite::SameDepth) {
+    if (write == PublicationWrite::CopyRace) {
+        const PublicationHookScope hook([&](DepthPublicationStage stage) {
+            if (stage == DepthPublicationStage::GuestCopied) *reinterpret_cast<volatile std::byte*>(target.address + sampleOffset) = std::byte{0x7e};
+        });
+        std::array<std::byte, 1> probe;
+        TargetRefuses([&] { AgcDriver::GuestMemory::Read(target.address, probe); }, "guest writes raced native multisample depth publication");
+        Require(*reinterpret_cast<const std::byte*>(target.address + sampleOffset) == std::byte{0x7e} && DepthSurfaceAt(target.address), "a CPU store during publication was overwritten or its owner retired");
+    } else if (write == PublicationWrite::Retired) {
+        const PublicationHookScope hook([&](DepthPublicationStage stage) {
+            if (stage != DepthPublicationStage::ReadCaptured) return;
+            for (std::size_t index = 0u; index < addresses.size(); ++index) RetireUnmappedDepth_nid_no_patch(addresses[index], sizes[index]);
+        });
+        RequireNoResidentDepthRead_nid_no_patch(target.address, 1u);
+        Require(!DepthSurfaceAt(target.address), "an unmapped publication owner remained resident");
+    } else if (write == PublicationWrite::ColorAcquisition) {
+        TargetMemory colorMemory(65536u, true);
+        ColorTarget color{};
+        color.address = color.surfaceAddress = colorMemory.Address();
+        color.extent = color.surfaceExtent = extent;
+        color.format = VK_FORMAT_R8_UNORM;
+        color.elementBytes = 1u;
+        color.tileMode = ColorTileMode::RenderTarget;
+        color.samples = samples;
+        color.bytes = extent.width * extent.height;
+        MultisampleTargetView(context, color);
+        const auto resource = DecodeTextureResource(DepthSampleWords(target));
+        const PublicationTimeout timeout;
+        TargetRefuses([&] { MultisampleTargetTexture(context, resource, {}); }, "sample-preserving guest publication");
+        TargetRefuses([&] { MultisampleTargetFirstSample(context, resource, {}); }, "sample-preserving guest publication");
+        TargetRefuses([&] { MultisampleTargetStorageView(context, resource); }, "sample-preserving guest publication");
+        ClearMultisampleTargets(context.device);
+    } else if (write == PublicationWrite::DrawAlias || write == PublicationWrite::DrawPending) {
+        recorder.Sync();
+        std::array<std::byte, 1> probe;
+        TargetRefuses([&] { AgcDriver::GuestMemory::Read(target.address, probe); }, "sample-preserving guest publication");
+        Require(DepthSurfaceAt(target.address), "a failed publication capture stopped attachment rendering");
+        if (write == PublicationWrite::DrawAlias) {
+            ClearMultisampleTargets(context.device);
+            const auto words = DepthSampleWords(target);
+            const auto texture = CachedSampledTexture(context, words);
+            recorder.Sync();
+            const auto count = extent.width * extent.height * samples;
+            Buffer output(context, (count + 2u) * 16u, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            const Fetch fetch(context, *texture, output, FetchShader(extent.width, extent.height, samples, false, true));
+            CommandBatch batch(context);
+            fetch.Run(batch.Handle(), count);
+            RecordMemoryBarrier(context, batch.Handle(), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+            batch.SubmitAndWait();
+            output.Invalidate();
+            for (std::uint32_t index = 0u; index < count; ++index) {
+                float value;
+                std::memcpy(&value, output.Bytes().data() + (index + 1u) * 16u, 4u);
+                Require(value == 0.25f + static_cast<float>(index % samples + 1u) / 16.0f, "an unavailable publication capture prevented a depth sample from rendering");
+            }
+        }
+    } else if (write >= PublicationWrite::SameDepth) {
         std::array<std::vector<std::byte>, 3> before;
         for (std::size_t index = 0u; index < addresses.size(); ++index) {
             const auto* guest = reinterpret_cast<const std::byte*>(addresses[index]);
@@ -853,9 +964,9 @@ void CheckDepthPublication(Context context, std::uint32_t samples, PublicationWr
             recorder.Sync();
             std::barrier<> reads(2);
             publicationReadBarrier = &reads;
-            SetDepthPublicationReadHookForTest(+[] { publicationReadBarrier->arrive_and_wait(); });
+            SetDepthPublicationHookForTest(+[](DepthPublicationStage stage) { if (stage == DepthPublicationStage::ReadCaptured) publicationReadBarrier->arrive_and_wait(); });
             struct ResetHook {
-                ~ResetHook() { SetDepthPublicationReadHookForTest(nullptr); publicationReadBarrier = nullptr; }
+                ~ResetHook() { SetDepthPublicationHookForTest(nullptr); publicationReadBarrier = nullptr; }
             } resetHook;
             std::array<std::exception_ptr, 2> failures;
             gpuLock->unlock();
@@ -2416,8 +2527,12 @@ int main(int argc, char** argv) {
                 CheckDepthPublication(publishing, samples, PublicationWrite::None, samples != 4u, PublicationUnmap::Middle);
                 for (const bool depthOnly : {false, true}) {
                     for (const auto clear : {PublicationClear::Clear, PublicationClear::Redraw}) CheckDepthPublication(publishing, samples, PublicationWrite::Pages, depthOnly, PublicationUnmap::None, clear);
+                    for (const auto clear : {PublicationClear::Clear, PublicationClear::Redraw, PublicationClear::Different}) CheckDepthPublication(publishing, samples, PublicationWrite::None, depthOnly, PublicationUnmap::None, clear);
                 }
+                CheckDepthPublication(publishing, samples, PublicationWrite::None, true, PublicationUnmap::None, PublicationClear::StencilRedraw);
             }
+            for (const auto clear : {PublicationClear::Stencil, PublicationClear::StencilSameRedraw, PublicationClear::QueuedStencilRedraw}) CheckDepthPublication(publishing, 4u, PublicationWrite::None, true, PublicationUnmap::None, clear);
+            for (const auto write : {PublicationWrite::CopyRace, PublicationWrite::Retired, PublicationWrite::ColorAcquisition, PublicationWrite::DrawAlias, PublicationWrite::DrawPending, PublicationWrite::DriverSameDepth, PublicationWrite::DriverSameStencil, PublicationWrite::DriverSameHtile}) CheckDepthPublication(publishing, 4u, write, true);
             CheckDepthPublication(publishing, 4u, PublicationWrite::Concurrent, false, PublicationUnmap::None, PublicationClear::None, &lock);
             CheckDepthPublication(publishing, 4u, PublicationWrite::SameHtile, false, PublicationUnmap::None, PublicationClear::Clear);
             CheckDepthPublication(publishing, 4u, PublicationWrite::SameDepth, true, PublicationUnmap::None, PublicationClear::Redraw);
