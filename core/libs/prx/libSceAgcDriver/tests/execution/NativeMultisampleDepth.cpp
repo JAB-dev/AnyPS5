@@ -2,6 +2,8 @@
 #include "prx/libSceAgcDriver/Graphics/include/TextureFormat.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/MultisampleTextureLayout.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/TextureDetiler.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Resources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/ShaderResources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
@@ -22,12 +24,14 @@
 #include <SDL_loadso.h>
 #include <algorithm>
 #include <array>
+#include <barrier>
 #include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -194,7 +198,10 @@ public:
         if (registered) GuestAllocations::Mutation().Add(pointer, bytes, true, true, true);
     }
     ~TargetMemory() {
-        if (registered) GuestAllocations::Mutation().Remove(pointer);
+        if (registered) {
+            GuestAllocations::Mutation mutation;
+            if (mutation.Overlaps(pointer, bytes)) mutation.Unmap(pointer, bytes, [](const void*, std::size_t, const void*, bool) {});
+        }
 #ifdef _WIN32
         GuestArena::GuestArenaReset_nid_postfix(pointer, bytes);
         GuestArena::GuestArenaRelease_nid_postfix(pointer, bytes);
@@ -522,7 +529,7 @@ struct StencilUse {
 
 class DepthRaster {
 public:
-    DepthRaster(const Context& context, const DepthTarget& target, VkImageView view, std::optional<StencilUse> stencil = std::nullopt) : context(context), extent(target.extent), samples(target.samples) {
+    DepthRaster(const Context& context, const DepthTarget& target, VkImageView view, std::optional<StencilUse> stencil = std::nullopt, bool perSampleStencil = false) : context(context), extent(target.extent), samples(target.samples) {
         try {
             const auto stencilLoad = target.stencilAddress != 0u ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
             const auto stencilStore = target.stencilAddress != 0u ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -599,6 +606,7 @@ public:
             for (std::uint32_t sample = 0u; sample < samples; ++sample) {
                 const auto mask = 1u << sample;
                 multisample.pSampleMask = &mask;
+                if (stencil && perSampleStencil) depth.front.reference = depth.back.reference = stencil->reference + sample;
                 Check(context.Function<PFN_vkCreateGraphicsPipelines>("vkCreateGraphicsPipelines")(context.device, VK_NULL_HANDLE, 1u, &info, nullptr, &pipelines[sample]), "depth sample pipeline");
             }
         } catch (...) { release(); throw; }
@@ -645,6 +653,241 @@ std::array<std::uint32_t, 8> DepthSampleWords(const DepthTarget& target) {
     const auto count = static_cast<std::uint32_t>(std::countr_zero(target.samples));
     const auto width = target.extent.width - 1u, height = target.extent.height - 1u;
     return {static_cast<std::uint32_t>(base), static_cast<std::uint32_t>((base >> 32u) & 255u) | (format << 20u) | ((width & 3u) << 30u), (width >> 2u) | (height << 14u), (14u << 28u) | (24u << 20u) | (count << 16u) | 0x204u, 0u, count << 4u, (target.iterate256 ? 1u << 10u : 0u) | (target.htilePipeAligned ? 1u << 19u : 0u) | (1u << 21u) | (static_cast<std::uint32_t>(metadata & 255u) << 24u), static_cast<std::uint32_t>(metadata >> 8u)};
+}
+
+enum class PublicationWrite { None, Pages, Queued, PaddingSameValue, Completion, Concurrent, SameDepth, SameStencil, SameHtile, ChangedHull, Possible, ImportSameValue };
+enum class PublicationUnmap { None, Middle, Head, Tail, EmptyDepth, EmptyStencil, EmptyHtile, Remap, Inaccessible };
+enum class PublicationClear { None, Clear, Redraw };
+std::barrier<>* publicationReadBarrier = nullptr;
+
+void CheckDepthPublication(Context context, std::uint32_t samples, PublicationWrite write, bool depthOnly, PublicationUnmap unmap = PublicationUnmap::None, PublicationClear clear = PublicationClear::None, std::unique_lock<AgcDriver::GuestMemory::GpuMutexType>* gpuLock = nullptr) {
+    constexpr VkExtent2D extent{129u, 3u};
+    const auto depthBytes = static_cast<std::size_t>(MultisampledDepthBytes_nid_no_patch(extent, 4u, samples));
+    const auto stencilBytes = static_cast<std::size_t>(MultisampledDepthBytes_nid_no_patch(extent, 1u, samples));
+    const auto metadataBytes = static_cast<std::size_t>(HtileMetadataBytes(extent));
+    TargetMemory memory(depthBytes, true), stencil(stencilBytes, true), metadata(65536u, true);
+    std::memset(stencil.Data(), 0x5a, stencilBytes);
+    std::memset(metadata.Data(), 0, metadataBytes);
+    DepthTarget target{memory.Address(), stencil.Address(), extent, VK_FORMAT_D32_SFLOAT_S8_UINT, 0.0f, 0x5au, metadata.Address(), !depthOnly, samples};
+    target.depthSwizzle = 24u;
+    target.pipeBankXor = samples == 2u ? 0u : 0x8c00u;
+    target.iterate256 = samples != 8u;
+    target.htilePipeAligned = true;
+    target.htileDepthOnly = depthOnly;
+    const MultisampleTextureLayout depthLayout(TextureTileMode::kZ64KBX, 4u, samples, extent.width, extent.height, 1u, target.pipeBankXor);
+    const MultisampleTextureLayout stencilLayout(TextureTileMode::kZ64KBX, 1u, samples, extent.width, extent.height, 1u, target.pipeBankXor);
+    Recorder recorder(context);
+    recorder.Activate();
+    std::unique_ptr<DepthRaster> raster;
+    struct Cleanup {
+        Recorder& recorder;
+        Context context;
+        ~Cleanup() { recorder.Sync(); ClearCachedTextures(context.device); ClearDepthSurfaces(context.device); }
+    } cleanup{recorder, context};
+    const auto view = DepthSurfaceView(context, target);
+    NoteDepthSurfaceWrite(context, target);
+    raster = std::make_unique<DepthRaster>(context, target, view, StencilUse{VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, 0x20u}, true);
+    raster->Run(recorder.Commands(), 0.25f);
+    if (clear != PublicationClear::None) {
+        target.clearStencil = 0x33u;
+        Require(DepthSurfaceView(context, target) == view, "publication clear replaced its native attachment");
+        NoteDepthMetadataFill(target.htileAddress, metadataBytes, 0u);
+        AgcDriver::GuestMemory::StoreOwnBytes(target.htileAddress, metadataBytes, [&] { std::memset(metadata.Data(), 0, metadataBytes); });
+        Require(DepthSurfaceView(context, target) == view, "publication did not apply its native clear in place");
+        if (clear == PublicationClear::Redraw) {
+            NoteDepthSurfaceWrite(context, target);
+            raster->Run(recorder.Commands(), 0.5f);
+        }
+    }
+    std::array<std::vector<std::byte>, 3> expected{
+        std::vector<std::byte>(depthBytes, std::byte{0xa5}),
+        std::vector<std::byte>(metadataBytes),
+        std::vector<std::byte>(stencilBytes, std::byte{0x5a})
+    };
+    for (std::uint32_t y = 0u; y < extent.height; ++y) {
+        for (std::uint32_t x = 0u; x < extent.width; ++x) {
+            for (std::uint32_t sample = 0u; sample < samples; ++sample) {
+                const auto value = clear == PublicationClear::Clear ? target.clearDepth : (clear == PublicationClear::Redraw ? 0.5f : 0.25f) + static_cast<float>(sample + 1u) / 16.0f;
+                std::memcpy(expected[0].data() + depthLayout.Offset(x, y, 0u, sample), &value, 4u);
+                expected[2][stencilLayout.Offset(x, y, 0u, sample)] = static_cast<std::byte>(clear == PublicationClear::Clear && !depthOnly ? target.clearStencil : 0x20u + sample);
+            }
+        }
+    }
+    const std::uint32_t expanded = depthOnly ? 0xfffc000fu : 0xfffff3ffu;
+    for (std::size_t offset = 0u; offset < metadataBytes; offset += 4u) std::memcpy(expected[1].data() + offset, &expanded, 4u);
+    const std::array addresses{target.address, target.htileAddress, target.stencilAddress};
+    const std::array sizes{depthBytes, metadataBytes, stencilBytes};
+    if (clear != PublicationClear::None && write == PublicationWrite::Pages) {
+        std::memset(metadata.Data(), 0x69, metadataBytes);
+        std::fill(expected[1].begin(), expected[1].end(), std::byte{0x69});
+    }
+    if (write == PublicationWrite::Pages) {
+        for (std::size_t index = 0u; index < addresses.size(); ++index) {
+            const auto first = index == 1u ? 0u : 4096u;
+            const auto bytes = std::min<std::size_t>(4096u, sizes[index] - first);
+            auto* guest = reinterpret_cast<std::byte*>(addresses[index] + first);
+            for (std::size_t offset = 0u; offset < bytes; ++offset) {
+                guest[offset] ^= std::byte{0xff};
+                expected[index][first + offset] = guest[offset];
+            }
+        }
+    }
+    if (write == PublicationWrite::Queued) {
+        QueueTargetByteWrite(context, recorder, target.address + depthBytes - 1u, std::byte{0x7e});
+        expected[0].back() = std::byte{0x7e};
+    }
+    if (write == PublicationWrite::PaddingSameValue) {
+        std::size_t padding = 0u;
+        while (padding < depthBytes && !std::all_of(expected[0].begin() + padding, expected[0].begin() + padding + 4096u, [](std::byte value) { return value == std::byte{0xa5}; })) padding += 4096u;
+        Require(padding < depthBytes, "native depth publication fixture needs a padding-only page");
+        *reinterpret_cast<volatile std::byte*>(target.address + padding) = std::byte{0xa5};
+    }
+    if (write == PublicationWrite::Completion) {
+        std::array<std::vector<std::byte>, 3> before;
+        for (std::size_t index = 0u; index < addresses.size(); ++index) {
+            const auto* guest = reinterpret_cast<const std::byte*>(addresses[index]);
+            before[index].assign(guest, guest + sizes[index]);
+        }
+        bool refused = false;
+        recorder.OnComplete([&] {
+            std::array<std::byte, 1> probe;
+            TargetRefuses([&] { AgcDriver::GuestMemory::Read(target.address, probe); }, "publication inside a GPU completion");
+            refused = true;
+        });
+        recorder.Sync();
+        Require(refused && DepthSurfaceAt(target.address), "completion publication did not refuse while retaining its owner");
+        for (std::size_t index = 0u; index < addresses.size(); ++index) Require(std::equal(before[index].begin(), before[index].end(), reinterpret_cast<const std::byte*>(addresses[index])), "completion publication changed guest bytes");
+    }
+    const auto sampleOffset = depthLayout.Offset(0u, 0u, 0u, 0u);
+    if (write == PublicationWrite::SameDepth) *reinterpret_cast<volatile std::byte*>(target.address + sampleOffset) = std::byte{0xa5};
+    if (write == PublicationWrite::SameStencil) *reinterpret_cast<volatile std::byte*>(target.stencilAddress + stencilLayout.Offset(0u, 0u, 0u, 0u)) = std::byte{0x5a};
+    if (write == PublicationWrite::SameHtile) *reinterpret_cast<volatile std::byte*>(target.htileAddress) = std::byte{0};
+    if (write == PublicationWrite::ChangedHull) {
+        const auto page = target.address + (sampleOffset & ~std::uint64_t{4095u});
+        std::vector<std::byte> original(4096u, std::byte{0xa5}), changed = original;
+        changed.front() ^= std::byte{1};
+        changed.back() ^= std::byte{1};
+        AgcDriver::GuestMemory::WriteChanged(page, changed, original);
+    }
+    if (write == PublicationWrite::Possible) AgcDriver::GuestMemory::MarkPossiblyWritten(target.address, depthBytes);
+    if (write == PublicationWrite::ImportSameValue) {
+        Require(AgcDriver::GuestMemory::ImportWatched(target.address, depthBytes, [&] {
+            *reinterpret_cast<volatile std::byte*>(target.address + sampleOffset) = std::byte{0xa5};
+            return true;
+        }), "native depth publication import-window simulation failed");
+    }
+    std::array<std::pair<std::size_t, std::size_t>, 3> holes{};
+    std::array<std::vector<std::byte>, 3> excluded;
+    struct ProtectedHoles {
+        std::vector<std::pair<void*, std::size_t>> ranges;
+        void Restore() {
+            for (const auto& [pointer, bytes] : ranges) {
+#ifdef _WIN32
+                DWORD previous = 0u;
+                Require(VirtualProtect(pointer, bytes, PAGE_READWRITE, &previous) != 0, "cannot restore publication fixture pages");
+#else
+                Require(mprotect(pointer, bytes, PROT_READ | PROT_WRITE) == 0, "cannot restore publication fixture pages");
+#endif
+            }
+            ranges.clear();
+        }
+        ~ProtectedHoles() { Restore(); }
+    } protectedHoles;
+    if (unmap != PublicationUnmap::None) {
+        recorder.Sync();
+        for (std::size_t index = 0u; index < addresses.size(); ++index) {
+            const bool empty = (unmap == PublicationUnmap::EmptyDepth && index == 0u) || (unmap == PublicationUnmap::EmptyHtile && index == 1u) || (unmap == PublicationUnmap::EmptyStencil && index == 2u);
+            if (unmap >= PublicationUnmap::EmptyDepth && unmap <= PublicationUnmap::EmptyHtile && !empty) continue;
+            if ((unmap == PublicationUnmap::Remap || unmap == PublicationUnmap::Inaccessible) && index == 1u) continue;
+            const auto sample = index == 0u ? sampleOffset : index == 2u ? static_cast<std::size_t>(stencilLayout.Offset(0u, 0u, 0u, 0u)) : sizes[index] / 2u;
+            auto first = sample == 0u ? 0u : sample - 1u;
+            auto last = std::min<std::size_t>(sample + 16u, sizes[index]);
+            if (unmap == PublicationUnmap::Head || empty) first = 0u;
+            if (unmap == PublicationUnmap::Tail || empty) last = sizes[index];
+            if (unmap == PublicationUnmap::Remap || unmap == PublicationUnmap::Inaccessible) {
+                first = sample & ~std::size_t{4095u};
+                last = first + 4096u;
+            }
+            holes[index] = {first, last};
+            auto* guest = reinterpret_cast<std::byte*>(addresses[index]);
+            Require(!std::equal(expected[index].begin() + first, expected[index].begin() + last, guest + first), "publication unmap fixture must discard host-written bytes");
+            excluded[index].assign(guest + first, guest + last);
+            {
+                GuestAllocations::Mutation mutation;
+                mutation.Unmap(guest + first, last - first, [&](const void* pointer, std::size_t bytes, const void*, bool) {
+                    if (unmap != PublicationUnmap::Inaccessible) return;
+#ifdef _WIN32
+                    DWORD previous = 0u;
+                    Require(VirtualProtect(const_cast<void*>(pointer), bytes, PAGE_NOACCESS, &previous) != 0, "cannot protect publication fixture hole");
+#else
+                    Require(mprotect(const_cast<void*>(pointer), bytes, PROT_NONE) == 0, "cannot protect publication fixture hole");
+#endif
+                    protectedHoles.ranges.emplace_back(const_cast<void*>(pointer), bytes);
+                });
+                Require(!mutation.Overlaps(guest + first, last - first), "publication fixture did not unmap its hole");
+                if (unmap == PublicationUnmap::Remap) mutation.Add(guest + first, last - first, true, true, true);
+            }
+            if (unmap == PublicationUnmap::Remap) {
+                std::memset(guest + first, 0x69, last - first);
+                excluded[index].assign(guest + first, guest + last);
+            }
+        }
+        Require(DepthSurfaceAt(target.address), "partial unmap prematurely retired the native depth owner");
+    }
+    if (write >= PublicationWrite::SameDepth) {
+        std::array<std::vector<std::byte>, 3> before;
+        for (std::size_t index = 0u; index < addresses.size(); ++index) {
+            const auto* guest = reinterpret_cast<const std::byte*>(addresses[index]);
+            before[index].assign(guest, guest + sizes[index]);
+        }
+        std::array<std::byte, 1> probe;
+        TargetRefuses([&] { AgcDriver::GuestMemory::Read(target.address, probe); }, "cannot distinguish an unwritten byte");
+        Require(DepthSurfaceAt(target.address), "an ambiguous publication retired its native depth owner");
+        for (std::size_t index = 0u; index < addresses.size(); ++index) Require(std::equal(before[index].begin(), before[index].end(), reinterpret_cast<const std::byte*>(addresses[index])), "a refused publication changed guest bytes");
+    } else {
+        const auto trigger = unmap == PublicationUnmap::EmptyDepth ? 2u : 0u;
+        const auto [first, last] = holes[trigger];
+        std::array<std::byte, 1> probe;
+        if (write == PublicationWrite::Concurrent) {
+            Require(gpuLock != nullptr && gpuLock->owns_lock(), "concurrent publication needs the fixture GPU lock");
+            recorder.Sync();
+            std::barrier<> reads(2);
+            publicationReadBarrier = &reads;
+            SetDepthPublicationReadHookForTest(+[] { publicationReadBarrier->arrive_and_wait(); });
+            struct ResetHook {
+                ~ResetHook() { SetDepthPublicationReadHookForTest(nullptr); publicationReadBarrier = nullptr; }
+            } resetHook;
+            std::array<std::exception_ptr, 2> failures;
+            gpuLock->unlock();
+            {
+                std::array<std::jthread, 2> readers;
+                for (std::size_t index = 0u; index < readers.size(); ++index) {
+                    readers[index] = std::jthread([&, index] {
+                        try {
+                            std::array<std::byte, 1> observed;
+                            AgcDriver::GuestMemory::Read(addresses[index], observed);
+                            Require(observed[0] == expected[index][0], "concurrent native depth publication returned stale data");
+                        } catch (...) { failures[index] = std::current_exception(); }
+                    });
+                }
+            }
+            gpuLock->lock();
+            for (const auto& failure : failures) if (failure) std::rethrow_exception(failure);
+        } else AgcDriver::GuestMemory::Read(addresses[trigger] + (first == 0u ? last : 0u), probe);
+        Require(!DepthSurfaceAt(target.address), "a published native D32S8 owner was not retired");
+        protectedHoles.Restore();
+        for (std::size_t index = 0u; index < addresses.size(); ++index) {
+            const auto [begin, end] = holes[index];
+            for (const auto& [start, finish] : {std::pair<std::size_t, std::size_t>{0u, begin}, std::pair{end, sizes[index]}}) {
+                if (start == finish) continue;
+                std::vector<std::byte> observed(finish - start);
+                AgcDriver::GuestMemory::Read(addresses[index] + start, observed);
+                Require(std::equal(observed.begin(), observed.end(), expected[index].begin() + start), "native D32S8 publication lost live samples, HTILE, padding or guest writes");
+            }
+            Require(std::equal(excluded[index].begin(), excluded[index].end(), reinterpret_cast<const std::byte*>(addresses[index] + begin)), "native D32S8 publication wrote an unmapped or remapped hole");
+        }
+    }
+    std::printf("Native D32S8 publication samples=%u write=%u depthOnly=%u unmap=%u clear=%u checked\n", samples, static_cast<std::uint32_t>(write), depthOnly, static_cast<std::uint32_t>(unmap), static_cast<std::uint32_t>(clear));
 }
 
 std::array<std::uint32_t, 8> StencilSampleWords(const DepthTarget& target) {
@@ -2159,8 +2402,31 @@ int main(int argc, char** argv) {
             std::printf("skipped, no usable Vulkan device: %s\n", error.what());
             return VulkanTestSkipped;
         }
-        CheckDrawFeedback();
         const auto context = device->GetContext();
+        if (argc == 2 && std::string_view(argv[1]) == "--publication") {
+            std::unique_lock lock(AgcDriver::GuestMemory::GpuMutex());
+            TextureDetiler detiler(context);
+            auto publishing = context;
+            publishing.detiler = &detiler;
+            const auto supported = [&](std::uint32_t samples) { return DepthSupported(context, VK_FORMAT_D32_SFLOAT_S8_UINT, samples) && (context.limits.framebufferStencilSampleCounts & samples) != 0u; };
+            Require(supported(4u), "native depth publication requires sampled D32S8 with four samples");
+            for (const auto samples : {2u, 4u, 8u}) {
+                if (!supported(samples)) continue;
+                for (const auto write : {PublicationWrite::None, PublicationWrite::Pages, PublicationWrite::Queued, PublicationWrite::PaddingSameValue}) CheckDepthPublication(publishing, samples, write, samples != 4u);
+                CheckDepthPublication(publishing, samples, PublicationWrite::None, samples != 4u, PublicationUnmap::Middle);
+                for (const bool depthOnly : {false, true}) {
+                    for (const auto clear : {PublicationClear::Clear, PublicationClear::Redraw}) CheckDepthPublication(publishing, samples, PublicationWrite::Pages, depthOnly, PublicationUnmap::None, clear);
+                }
+            }
+            CheckDepthPublication(publishing, 4u, PublicationWrite::Concurrent, false, PublicationUnmap::None, PublicationClear::None, &lock);
+            CheckDepthPublication(publishing, 4u, PublicationWrite::SameHtile, false, PublicationUnmap::None, PublicationClear::Clear);
+            CheckDepthPublication(publishing, 4u, PublicationWrite::SameDepth, true, PublicationUnmap::None, PublicationClear::Redraw);
+            for (const auto unmap : {PublicationUnmap::Head, PublicationUnmap::Tail, PublicationUnmap::EmptyDepth, PublicationUnmap::EmptyStencil, PublicationUnmap::EmptyHtile, PublicationUnmap::Remap, PublicationUnmap::Inaccessible}) CheckDepthPublication(publishing, 4u, PublicationWrite::None, true, unmap);
+            CheckDepthPublication(publishing, 4u, PublicationWrite::Completion, true);
+            for (const auto write : {PublicationWrite::SameDepth, PublicationWrite::SameStencil, PublicationWrite::SameHtile, PublicationWrite::ChangedHull, PublicationWrite::Possible, PublicationWrite::ImportSameValue}) CheckDepthPublication(publishing, 4u, write, true);
+            return 0;
+        }
+        CheckDrawFeedback();
         if (argc == 1) CheckDepthAttachmentAlias();
         if (argc == 1) CheckStorageAliasRetirement();
         std::unique_lock lock(AgcDriver::GuestMemory::GpuMutex());
