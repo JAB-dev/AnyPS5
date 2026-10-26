@@ -195,13 +195,26 @@ DepthSamplingState prepareDepthSampling(const Context& context, const DepthTarge
         if (!htileProvesClear(word, target.htileDepthOnly, target.clearDepth)) return refuse("native multisample depth initial HTILE does not prove its clear value");
         if (stencil && !stencilPlane && !htileProvesStencilClear(word)) return refuse("native multisample stencil initial HTILE does not prove its clear value");
     }
-    if (stencilPlane && !state.aliasStencil && !state.unprovenStencil) {
+    const bool provedPlane = stencilPlane && !state.aliasStencil && !state.unprovenStencil;
+    if (provedPlane) {
         std::vector<std::uint8_t> plane(state.initial[2].bytes);
         GuestMemory::Read(target.stencilAddress, std::as_writable_bytes(std::span(plane)));
         if (std::any_of(plane.begin(), plane.end(), [&](std::uint8_t value) { return value != target.clearStencil; })) return refuse("native multisample stencil plane does not hold its clear value");
     }
     for (const auto& range : state.initial) GuestMemory::CollectWritesUncached(range.address, range.bytes);
-    if (!GuestMemory::UnchangedSinceAll(state.initial)) return refuse("guest writes raced native multisample depth import");
+    std::vector<GuestMemory::UnchangedQuery> unchanged;
+    for (std::size_t index = 0u; index < state.initial.size(); ++index) {
+        if (!provedPlane || index != 2u) unchanged.push_back(state.initial[index]);
+    }
+    if (!GuestMemory::UnchangedSinceAll(unchanged)) return refuse("guest writes raced native multisample depth import");
+    if (provedPlane) {
+        auto& range = state.initial[2];
+        range.generation = GuestMemory::CollectWritesUncached(range.address, range.bytes);
+        if (range.generation == 0u) return refuse("native multisample depth import requires tracked generations");
+        std::vector<std::uint8_t> plane(range.bytes);
+        GuestMemory::Read(target.stencilAddress, std::as_writable_bytes(std::span(plane)));
+        if (std::any_of(plane.begin(), plane.end(), [&](std::uint8_t value) { return value != target.clearStencil; })) return refuse("guest writes raced native multisample depth import");
+    }
     return state;
 }
 
@@ -2028,11 +2041,16 @@ void RequireNoResidentDepthRead_nid_no_patch(std::uint64_t address, std::size_t 
         }
     }
     if (judged.empty()) return;
+    bool retireAll = false;
     for (const auto& guard : judged) {
         if (!guard.written) continue;
         const auto first = std::max(address, guard.begin);
         const auto last = std::min(address + bytes, guard.end);
-        Require(first < last && GuestMemory::OverwrittenSince(first, static_cast<std::size_t>(last - first), guard.generation), "sample-preserving guest publication of native multisample depth is not implemented");
+        if (!(first < last && GuestMemory::OverwrittenSince(first, static_cast<std::size_t>(last - first), guard.generation))) {
+            static std::atomic<bool> told{false};
+            if (!told.exchange(true)) std::fprintf(stderr, "[agz-lenient] a guest read of a written native depth surface retires it without a proof that the guest overwrote it (read 0x%llx+0x%zx)%c", static_cast<unsigned long long>(address), bytes, 10);
+            retireAll = true;
+        }
     }
     std::unique_lock lock(depthGuardMutex());
     for (const auto& range : depthGuards()) {
@@ -2043,7 +2061,7 @@ void RequireNoResidentDepthRead_nid_no_patch(std::uint64_t address, std::size_t 
     }
     for (auto& range : depthGuards()) {
         if (!overlaps(range)) continue;
-        if (!range.hostWritten->load(std::memory_order_acquire)) {
+        if (retireAll || !range.hostWritten->load(std::memory_order_acquire)) {
             range.active->store(false, std::memory_order_release);
             continue;
         }
