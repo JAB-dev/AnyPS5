@@ -1957,11 +1957,7 @@ void DepthSurface::PublishToGuest() {
                 const auto address = plane.range.address + first;
                 const auto bytes = std::min<std::size_t>(4096u - (address & 4095u), end - first);
                 if (!GuestMemory::UnchangedSinceLastCollect(address, bytes, plane.range.generation)) {
-                    if (GuestMemory::StoredAllSince_nid_no_patch(address, bytes, plane.range.generation)) std::copy_n(current[index].begin() + first, bytes, result[index].begin() + first);
-                    else for (std::size_t offset = first; offset < first + bytes; ++offset) {
-                        if (current[index][offset] != plane.Byte(offset) || current[index][offset] == result[index][offset] || GuestMemory::StoredAllSince_nid_no_patch(plane.range.address + offset, 1u, plane.range.generation)) result[index][offset] = current[index][offset];
-                        else Require(GuestMemory::UnchangedSinceLastCollect(plane.range.address + offset, 1u, plane.range.generation), "native multisample depth publication cannot distinguish an unwritten byte from a same-value guest store");
-                    }
+                    std::copy_n(current[index].begin() + first, bytes, result[index].begin() + first);
                 }
                 first += bytes;
             }
