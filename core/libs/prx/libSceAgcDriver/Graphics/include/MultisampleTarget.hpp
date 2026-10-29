@@ -98,6 +98,7 @@ void ClearMultisampleTargets(VkDevice device);
 void InstallResidentImageReadGuard_nid_no_patch();
 void UpdateResidentImageUnmapObserver_nid_no_patch();
 void GuardOneFragmentFmask(const Context& context, const ColorTarget& target);
+bool HoldsMultisampleTargetsLock();
 void RequireNoMultisampleTarget(std::uint64_t address, std::size_t bytes, const char* access);
 void RequireNoMultisampleColorTarget(std::uint64_t address, std::size_t bytes, const char* access);
 

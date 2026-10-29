@@ -38,7 +38,9 @@ bool DirectDepthCopy(const Context& context, VkFormat depthFormat, VkImageAspect
 void SetDirectDepthCopy(bool enabled);
 std::uint64_t DirectDepthCopyCount();
 std::uint64_t MultisampledDepthBytes_nid_no_patch(VkExtent2D extent, std::uint32_t bytesPerTexel, std::uint32_t samples);
-void RequireNoResidentDepthRead_nid_no_patch(std::uint64_t address, std::size_t bytes);
+void RequireNoResidentDepthRead_nid_no_patch(std::uint64_t address, std::size_t bytes, bool allowPublication = true);
+enum class DepthPublicationStage { ReadCaptured, GuestCopied };
+void SetDepthPublicationHookForTest(void (*hook)(DepthPublicationStage));
 bool HasResidentDepthGuards_nid_no_patch();
 void RetireUnmappedDepth_nid_no_patch(std::uintptr_t address, std::size_t bytes);
 void RequireNoNativeDepthFeedback_nid_no_patch(const Context& context, const DepthTarget& target, std::span<const std::shared_ptr<Texture>> sampled);
