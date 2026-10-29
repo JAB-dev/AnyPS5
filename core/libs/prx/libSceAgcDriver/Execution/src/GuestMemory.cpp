@@ -1304,9 +1304,28 @@ struct WriteTracker {
         return false;
     }
 
-    bool rangeUnchanged(std::uint64_t address, std::size_t bytes, std::uint64_t since) const {
+    bool rangeUnchanged(std::uint64_t address, std::size_t bytes, std::uint64_t since, bool walked = true) const {
         if (refusedSince(address, address + bytes, since)) return false;
-        return unchanged(blockOf(address), blockOf(address + bytes - 1), since) || !storedOver(address, address + bytes, since, true);
+        return unchanged(blockOf(address), blockOf(address + bytes - 1), since) || !storedOver(address, address + bytes, since, walked);
+    }
+
+    bool cpuUnchanged(std::uint64_t address, std::size_t bytes, std::uint64_t generation) const {
+        const auto first = blockOf(address);
+        const auto last = blockOf(address + bytes - 1u);
+        const auto end = address + bytes;
+        for (auto block = first; block <= last; ++block) {
+            if (const auto found = cpuPages.find(block); found != cpuPages.end()) {
+                const auto begin = blockBegin(block);
+                const auto from = std::max(address, begin) - begin;
+                const auto to = std::min<std::uint64_t>(end, begin + WriteBlockBytes) - begin;
+                for (auto page = from / WritePageBytes; page <= (to - 1u) / WritePageBytes; ++page) {
+                    if (found->second.pages[page] > generation) return false;
+                }
+            } else if (cpuStampOf(block) > generation) {
+                return false;
+            }
+        }
+        return true;
     }
 
     void stamp(std::uint64_t block, std::uint32_t stampGeneration, StampKind kind) {
@@ -1992,21 +2011,21 @@ static GuestAllocations::Lease::Ranges pinStoreRanges(std::uint64_t address, std
     return pinned;
 }
 
-std::uint64_t storeOwn(std::uint64_t address, std::size_t bytes, const std::function<std::pair<std::uint64_t, std::uint64_t>()>& store) {
+std::uint64_t storeOwn(std::uint64_t address, std::size_t bytes, const std::function<std::pair<std::uint64_t, std::uint64_t>()>& store, bool complete = true) {
     if (bytes == 0) return 0;
     const auto pinned = pinStoreRanges(address, bytes);
     BreakProofs();
-    const auto stampStored = [](WriteTracker& tracker, std::pair<std::uint64_t, std::uint64_t> stored) -> std::uint64_t {
+    const auto stampStored = [complete](WriteTracker& tracker, std::pair<std::uint64_t, std::uint64_t> stored) -> std::uint64_t {
         if (stored.second <= stored.first) return 0;
         ++tracker.generation;
         if (!tracker.watched || !tracker.covers(stored.first, static_cast<std::size_t>(stored.second - stored.first))) {
             tracker.noteUnstampedStore(stored.first, stored.second);
-            if (tracker.watched) tracker.stampWatchedPart(stored.first, stored.second, tracker.generation, true);
+            if (tracker.watched) tracker.stampWatchedPart(stored.first, stored.second, tracker.generation, complete);
             return 0;
         }
         for (auto block = tracker.blockOf(stored.first); block <= tracker.blockOf(stored.second - 1); ++block) {
             tracker.stamp(block, tracker.generation, StampKind::Driver);
-            tracker.noteDriverStore(block, stored.first, stored.second, tracker.generation, true);
+            tracker.noteDriverStore(block, stored.first, stored.second, tracker.generation, complete);
         }
         return tracker.generation;
     };
@@ -2202,22 +2221,16 @@ bool UnchangedSinceCollected(std::uint64_t address, std::size_t bytes, std::uint
     auto& tracker = Tracker();
     const auto lock = lockTracker(tracker);
     if (!tracker.watched || generation == 0 || bytes == 0 || !tracker.covers(address, bytes)) return false;
-    const auto first = tracker.blockOf(address);
-    const auto last = tracker.blockOf(address + bytes - 1);
-    const auto end = address + bytes;
-    for (auto block = first; block <= last; ++block) {
-        if (const auto found = tracker.cpuPages.find(block); found != tracker.cpuPages.end()) {
-            const auto begin = tracker.blockBegin(block);
-            const auto from = std::max(address, begin) - begin;
-            const auto to = std::min<std::uint64_t>(end, begin + WriteBlockBytes) - begin;
-            for (auto page = from / WritePageBytes; page <= (to - 1) / WritePageBytes; ++page) {
-                if (found->second.pages[page] > generation) return false;
-            }
-        } else if (tracker.cpuStampOf(block) > generation) {
-            return false;
-        }
-    }
-    return true;
+    return tracker.cpuUnchanged(address, bytes, generation);
+}
+
+bool UnchangedSinceLastCollect(std::uint64_t address, std::size_t bytes, std::uint64_t generation) {
+    if (bytes == 0u || bytes > std::numeric_limits<std::uint64_t>::max() - address) return false;
+    auto& tracker = Tracker();
+    const auto lock = lockTracker(tracker);
+    tracker.initialize();
+    if (!tracker.watched || generation == 0u || !tracker.covers(address, bytes)) return false;
+    return tracker.cpuUnchanged(address, bytes, generation) && tracker.rangeUnchanged(address, bytes, generation, false);
 }
 
 bool WrittenSince(std::uint64_t address, std::size_t bytes, std::uint64_t generation) {
@@ -2895,7 +2908,7 @@ void WriteChanged(std::uint64_t address, std::span<const std::byte> current, std
             lastChanged = std::max(lastChanged, at + 1);
         }
         return firstChanged < lastChanged ? std::pair<std::uint64_t, std::uint64_t>{address + firstChanged, address + lastChanged} : std::pair<std::uint64_t, std::uint64_t>{0, 0};
-    });
+    }, false);
 }
 
 void Write(std::uint64_t address, std::span<const std::byte> source, std::size_t alignment) {
