@@ -1034,9 +1034,19 @@ void CheckDepthPublication(Context context, std::uint32_t samples, PublicationWr
             before[index].assign(guest, guest + sizes[index]);
         }
         std::array<std::byte, 1> probe;
-        TargetRefuses([&] { AgcDriver::GuestMemory::Read(target.address, probe); }, "cannot distinguish an unwritten byte");
-        Require(DepthSurfaceAt(target.address), "an ambiguous publication retired its native depth owner");
-        for (std::size_t index = 0u; index < addresses.size(); ++index) Require(std::equal(before[index].begin(), before[index].end(), reinterpret_cast<const std::byte*>(addresses[index])), "a refused publication changed guest bytes");
+        AgcDriver::GuestMemory::Read(target.address, probe);
+        Require(!DepthSurfaceAt(target.address), "a published native D32S8 owner was not retired");
+        const auto storedPlane = write == PublicationWrite::SameStencil ? 2u : write == PublicationWrite::SameHtile ? 1u : 0u;
+        const auto storedOffset = write == PublicationWrite::SameStencil ? stencilLayout.Offset(0u, 0u, 0u, 0u) : write == PublicationWrite::SameHtile ? 0u : sampleOffset;
+        for (std::size_t index = 0u; index < addresses.size(); ++index) {
+            const auto* guest = reinterpret_cast<const std::byte*>(addresses[index]);
+            for (std::size_t first = 0u; first < sizes[index]; first += 4096u) {
+                const auto bytes = std::min<std::size_t>(4096u, sizes[index] - first);
+                const bool kept = (write == PublicationWrite::Possible && index == 0u) || (index == storedPlane && first == (storedOffset & ~std::size_t{4095u}));
+                const auto& want = kept ? before[index] : expected[index];
+                Require(std::equal(guest + first, guest + first + bytes, want.begin() + first), kept ? "native D32S8 publication replaced a page the guest wrote" : "native D32S8 publication left a page the guest did not write stale");
+            }
+        }
     } else {
         const auto trigger = unmap == PublicationUnmap::EmptyDepth ? 2u : 0u;
         const auto [first, last] = holes[trigger];
