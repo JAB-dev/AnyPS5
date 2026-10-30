@@ -72,7 +72,7 @@ def convert(relinker, source, output, extra, windows):
     for relative in extra:
         command += ["--module-dir", relative]
     command += [str(source / "eboot.elf"), str(output)]
-    return subprocess.run(command, capture_output=True, text=True)
+    return subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 def comparison_path(path, links=frozenset()):
@@ -161,7 +161,11 @@ def main(argv=None):
         except (unwrap_self.Refused, OSError) as error:
             print(f"FAIL: unwrapping {dump}: {error}", file=sys.stderr)
             return 2
-        result = convert(relinker, source, output / ("app.exe" if args.windows else "app.elf"), extra, args.windows)
+        try:
+            result = convert(relinker, source, output / ("app.exe" if args.windows else "app.elf"), extra, args.windows)
+        except OSError as error:
+            print(f"FAIL: cannot run relinker {relinker}: {error}", file=sys.stderr)
+            return 2
         if result.returncode != 0:
             print(f"FAIL: relinker exited with {result.returncode}", file=sys.stderr)
             print((result.stderr or result.stdout).strip(), file=sys.stderr)
