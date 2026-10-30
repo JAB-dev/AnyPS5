@@ -1,3 +1,4 @@
+#include "prx/libSceVenc/include/Api.hpp"
 #include <cstdint>
 #include <cstddef>
 #include "SceTypes.hpp"
@@ -73,6 +74,26 @@ int APS5_VABI sceVencStartEncode() {
 int APS5_VABI sceVencStopEncode() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
+}
+
+int APS5_VABI sceVencGetHeader() {
+    NotImplemented_nid_no_patch(__func__);
+}
+
+int APS5_VABI sceVencSetNormalPrivacyProtectionConfig() {
+    NotImplemented_nid_no_patch(__func__);
+}
+
+int APS5_VABI sceVencSetImagePasteConfig() {
+    NotImplemented_nid_no_patch(__func__);
+}
+
+int APS5_VABI sceVencQueryPreset2() {
+    NotImplemented_nid_no_patch(__func__);
+}
+
+int APS5_VABI sceVencSetCodecConfig() {
+    NotImplemented_nid_no_patch(__func__);
 }
 
 }

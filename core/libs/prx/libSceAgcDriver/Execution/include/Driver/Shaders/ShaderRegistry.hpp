@@ -212,6 +212,9 @@ std::shared_ptr<const ShaderRecompiler::SourceHandle> PrepareShaderWithDiagnosti
 
 std::uint64_t NullPixelProgramAddress();
 ShaderSnapshot PrepareNullPixelProgram(const VulkanDevice& device);
+std::uint64_t DepthCopyPixelProgramAddress(bool multisampled);
+std::uint32_t DepthCopyPixelUserWords(bool multisampled);
+ShaderSnapshot PrepareDepthCopyPixelProgram(bool multisampled);
 std::optional<ShaderRecompiler::ShaderFloatMode> RegisteredFloatMode(const ShaderSnapshot& snapshot);
 std::optional<ShaderRecompiler::ShaderFloatMode> DispatchFloatMode(const ShaderSnapshot& snapshot, const Registers& live);
 std::shared_ptr<const ShaderSnapshot> RegisteredHeader(const ShaderRegistry& registry, const Shader* shader);
@@ -221,9 +224,11 @@ void SubmitRegistrationPreparation(std::function<void()> task, const PreparedSha
 void PrioritizeRegistrationPreparation(PreparedShaders& prepared);
 void AwaitRegistrationPreparation();
 void SubmitLibraryPrebuild(std::function<void()> task);
+void SubmitComputePrebuild(std::function<void()> task);
 void AwaitLibraryPrebuilds();
 void CloseRegistrationPreparation();
 unsigned RegistrationPreparationThreads();
+std::optional<std::size_t> RegistrationPreparationsPending();
 
 void ResolvePreparedGraphics(const ShaderSnapshot& front, const std::shared_ptr<const ShaderSnapshot>& fragment, std::uint32_t primitiveType, const ShaderRecompiler::SpirvTarget& target, bool deferUnprepared = false);
 

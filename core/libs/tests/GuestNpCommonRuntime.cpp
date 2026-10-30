@@ -1,5 +1,7 @@
+#include "prx/libSceNpCommon/include/Api.hpp"
 #include "SceTypes.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <array>
@@ -8,133 +10,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
-
-extern "C" {
-int APS5_VABI sceNpAtomicCas32(std::int32_t* value, std::int32_t expected, std::int32_t desired);
-int APS5_VABI sceNpAtomicInc32(std::int32_t* value);
-int APS5_VABI sceNpAtomicDec32(std::int32_t* value);
-int APS5_VABI sceNpCreateSema(KernelSema* sema, std::uint32_t flags, int initial, int maximum, const char* name);
-int APS5_VABI sceNpDeleteSema(KernelSema sema);
-int APS5_VABI sceNpPollSema(KernelSema sema);
-int APS5_VABI sceNpSignalSema(KernelSema sema);
-int APS5_VABI sceNpCreateEventFlag(KernelEventFlag* flag, const char* name, std::uint32_t attr, std::uint64_t pattern);
-int APS5_VABI sceNpDeleteEventFlag(KernelEventFlag flag);
-int APS5_VABI sceNpSetEventFlag(KernelEventFlag flag, std::uint64_t pattern);
-int APS5_VABI sceNpPollEventFlag(KernelEventFlag flag, std::uint64_t pattern, std::uint32_t mode, std::uint64_t* result);
-int APS5_VABI sceNpCreateThread(Pthread* thread, PthreadEntry entry, void* arg, int priority, std::size_t stackSize, KernelCpumask affinity, const char* name);
-int APS5_VABI sceNpJoinThread(Pthread thread, void** value);
-int APS5_VABI sceNpThreadGetId(Pthread* thread);
-
-struct NpHeap {
-    void* mspace;
-};
-
-struct NpHeapStat {
-    std::uint64_t maxSystemSize;
-    std::uint64_t maxInuseSize;
-    std::uint64_t currentInuseSize;
-};
-
-struct NpKernelMemory {
-    std::uint64_t size;
-    std::uint64_t reserved;
-    void* address;
-};
-
-struct NpMemoryHeap {
-    NpKernelMemory memory;
-    NpHeap heap;
-};
-
-struct NpAllocator {
-    void* (APS5_VABI *allocate)(std::size_t size, void* context);
-    void* (APS5_VABI *reallocate)(void* pointer, std::size_t size, void* context);
-    void (APS5_VABI *release)(void* pointer, void* context);
-    void* context;
-};
-
-struct NpAllocatorEx {
-    NpAllocator allocator;
-    int outOfMemoryError;
-};
-
-int APS5_VABI sceNpHeapInit(NpHeap* heap, void* base, std::size_t size, const char* name);
-void APS5_VABI sceNpHeapDestroy(NpHeap* heap);
-void APS5_VABI sceNpHeapGetAllocator(NpHeap* heap, NpAllocator* allocator);
-int APS5_VABI sceNpHeapGetStat(const NpHeap* heap, NpHeapStat* stat);
-int APS5_VABI sceNpMemoryHeapInit(NpMemoryHeap* heap, std::uint64_t size, const char* name);
-void APS5_VABI sceNpMemoryHeapDestroy(NpMemoryHeap* heap);
-void APS5_VABI sceNpMemoryHeapGetAllocatorEx(NpMemoryHeap* heap, int outOfMemoryError, NpAllocatorEx* allocator);
-int APS5_VABI sceNpArchInit(void);
-int APS5_VABI sceNpIpc2ClientInit(void);
-int APS5_VABI sceNpIpc2ClientTerm(void);
-void APS5_VABI sceNpArchTerm(void);
-NpAllocatorEx* APS5_VABI sceNpGlobalHeapGetAllocatorExPtr(void);
-int APS5_VABI sceNpAllocateKernelMemoryWithAlignment(std::uint64_t size, const char* name, void** address, NpKernelMemory* memory);
-int APS5_VABI sceNpFreeKernelMemory(NpKernelMemory* memory);
-struct NpCallout {
-    NpCallout* next;
-    void (APS5_VABI *handler)(void* arg);
-    std::uint64_t deadline;
-    void* arg;
-    std::uint64_t reserved;
-};
-
-struct NpCalloutContext {
-    Pthread thread;
-    PthreadMutex mutex;
-    PthreadCond cond;
-    int initialized;
-    int stopping;
-    NpCallout* pending;
-};
-
-int APS5_VABI sceNpCalloutInitCtx(NpCalloutContext* context, const char* name, std::size_t stackSize, int priority, KernelCpumask affinity);
-void APS5_VABI sceNpCalloutTermCtx(NpCalloutContext* context);
-int APS5_VABI sceNpCalloutStartOnCtx(NpCalloutContext* context, NpCallout* callout, std::uint32_t usec, void (APS5_VABI *handler)(void* arg), void* arg);
-int APS5_VABI sceNpCalloutStopOnCtx(NpCalloutContext* context, NpCallout* callout, int* wasPending);
-int APS5_VABI sceNpUtilCmpAccountId(std::uint64_t left, std::uint64_t right);
-int APS5_VABI sceNpCmpNpId(const void* npId1, const void* npId2);
-bool APS5_VABI sceNpIntIsOnlineIdString(const char* text);
-int APS5_VABI sceNpUtilGetNpLanguageCode(int language, char* code);
-int APS5_VABI sceNpUtilGetNpLanguageCode2(int language, char* tag);
-const char* APS5_VABI sceNpUtilGetNpLanguageCodeStr(int language);
-const char* APS5_VABI sceNpUtilGetNpLanguageCode2Str(int language);
-std::uint32_t APS5_VABI sceNpDbgAssignDebugId(void);
-int APS5_VABI sceNpUtilJsonEscape(char* dst, std::size_t dstSize, const char* src, std::size_t srcLength);
-int APS5_VABI sceNpUtilJsonUnescape(char* dst, std::size_t dstSize, const char* src, std::size_t srcLength, std::size_t* dstLength);
-int APS5_VABI sceNpUtilJsonGetOneChar(char* dst, std::size_t dstSize, const char* src, std::size_t srcLength, std::size_t* dstLength, std::size_t* consumed);
-int APS5_VABI sceNpUtilGetNthChar(std::size_t index, const char* text, const char** character);
-int APS5_VABI sceNpUtilHttpUrlEncode(char* dst, std::size_t dstSize, const char* src, std::size_t srcLength, std::size_t* dstLength);
-struct NpTitleIdParts {
-    char id[9];
-    char reserved;
-    std::uint8_t index;
-};
-
-int APS5_VABI sceNpUtilBuildTitleId(const NpTitleIdParts* parts, char* titleId, std::size_t size);
-int APS5_VABI sceNpBase64GetDecodeSize(const char* src, std::size_t length);
-int APS5_VABI sceNpBase64Decoder(const char* src, std::size_t length, void* dst, std::size_t capacity);
-int APS5_VABI sceNpBase64Encoder(const void* src, char* dst, std::size_t length);
-int APS5_VABI sceNpBase64UrlGetDecodeSize(const char* src, std::size_t length);
-int APS5_VABI sceNpBase64UrlDecoder(const char* src, std::size_t length, void* dst, std::size_t capacity);
-int APS5_VABI sceNpBase64UrlEncoder(const void* src, char* dst, std::size_t length);
-int APS5_VABI sceNpHexToInt(int c);
-int APS5_VABI sceNpIntToHex(std::uint32_t value, bool uppercase);
-int APS5_VABI sceNpUInt32ToStr(char* buf, std::size_t size, std::uint32_t value, std::uint32_t radix, std::uint32_t flags, std::size_t* length);
-int APS5_VABI sceNpUInt64ToStr(char* buf, std::size_t size, std::uint64_t value, std::uint32_t radix, std::uint32_t flags, std::size_t* length);
-int APS5_VABI sceNpInt32ToStr(char* buf, std::size_t size, std::int32_t value, std::uint32_t radix, std::uint32_t flags, std::size_t* length);
-int APS5_VABI sceNpInt64ToStr(char* buf, std::size_t size, std::int64_t value, std::uint32_t radix, std::uint32_t flags, std::size_t* length);
-int APS5_VABI sceNpStrToInt32(const char* str, std::int32_t* value, int base, std::size_t* parsedLength);
-int APS5_VABI sceNpStrToInt64(const char* str, std::int64_t* value, int base, std::size_t* parsedLength);
-int APS5_VABI sceNpStrToUInt32(const char* str, std::uint32_t* value, int base, std::size_t* parsedLength);
-int APS5_VABI sceNpStrToUInt64(const char* str, std::uint64_t* value, int base, std::size_t* parsedLength);
-int APS5_VABI sceNpStrBuildHex(char* dst, std::size_t size, const void* src, std::size_t length, bool uppercase);
-int APS5_VABI sceNpStrParseHex(const char* hex, void* out, std::size_t capacity);
-int APS5_VABI sceNpStrnParseHex(const char* hex, std::size_t length, void* out, std::size_t capacity);
-int APS5_VABI sceNpStrcpyToBuf(char* dst, std::size_t size, const char* src);
-int APS5_VABI sceNpStrncpyToBuf(char* dst, std::size_t size, const char* src, std::size_t maxLength);
-}
 
 namespace {
 
@@ -156,7 +31,13 @@ constexpr int NpOutOfRange = static_cast<int>(0x8055800E);
 constexpr int NpInvalidArgument = static_cast<int>(0x80558009);
 constexpr int NpEventFlagBusy = static_cast<int>(0x8055800C);
 constexpr int NpSemaBusy = static_cast<int>(0x8055800D);
+constexpr int NpStreamBufferTooSmall = static_cast<int>(0x80559E0D);
+constexpr int NpTitleIdInvalid = static_cast<int>(0x80559E11);
+constexpr int NpTitleIdBufferTooSmall = static_cast<int>(0x80559E0D);
+constexpr int KernelNotPermitted = static_cast<int>(0x80020001);
+constexpr int KernelNoSuchObject = static_cast<int>(0x80020003);
 constexpr std::uint32_t EventFlagWaitAnd = 1;
+constexpr std::uint32_t EventFlagShared = 0x100;
 
 void Require(bool value, const char* message) {
     if (value) return;
@@ -193,6 +74,20 @@ void TestSemaphoresAndFlags() {
     Require(sceNpDeleteEventFlag(flag) == 0, "the event flag is deleted");
 }
 
+void TestSharedEventFlags() {
+    KernelEventFlag creator {};
+    Require(sceNpCreateEventFlag(&creator, "NpSharedFlag", EventFlagShared, 0) == 0, "a shared event flag is created");
+    KernelEventFlag opened {};
+    Require(sceNpOpenEventFlag(&opened, "NpSharedFlag") == 0 && opened != creator, "the shared event flag is opened by name");
+    std::uint64_t result = 0;
+    Require(sceNpSetEventFlag(opened, 2) == 0 && sceNpPollEventFlag(creator, 2, EventFlagWaitAnd, &result) == 0 && result == 2,
+        "a bit set through the opened handle is polled through the creator");
+    Require(sceNpCloseEventFlag(creator) == KernelNotPermitted, "the creator handle is not closed");
+    Require(sceNpCloseEventFlag(opened) == 0, "the opened handle is closed");
+    Require(sceNpCloseEventFlag(opened) == KernelNoSuchObject, "a closed handle is gone");
+    Require(sceNpDeleteEventFlag(creator) == 0, "the creator deletes the shared event flag");
+}
+
 void TestThreads() {
     Require(sceNpThreadGetId(nullptr) == NpInvalidArgument, "a null thread id output is refused");
     Pthread thread {};
@@ -220,10 +115,12 @@ void TestHeaps() {
         "the memory heap size is rounded up to 16 KiB");
     NpAllocatorEx allocatorEx {};
     sceNpMemoryHeapGetAllocatorEx(&memoryHeap, 0x1234, &allocatorEx);
+
     Require(allocatorEx.allocator.context == &memoryHeap && allocatorEx.outOfMemoryError == 0x1234,
         "the extended allocator carries the caller's error code");
     UseAllocator(allocatorEx.allocator);
     sceNpMemoryHeapDestroy(&memoryHeap);
+
     Require(memoryHeap.memory.address == nullptr && memoryHeap.heap.mspace == nullptr, "destroying clears the memory heap");
 
     NpKernelMemory memory {};
@@ -237,11 +134,13 @@ void TestHeaps() {
     Require(sceNpHeapInit(&heap, memory.address, memory.size, "np-test") == 0 && heap.mspace != nullptr, "a heap is created");
     NpAllocator allocator {};
     sceNpHeapGetAllocator(&heap, &allocator);
+
     Require(allocator.context == &heap, "the heap allocator uses the heap as its context");
     UseAllocator(allocator);
     NpHeapStat stat {};
     Require(sceNpHeapGetStat(&heap, &stat) == 0 && stat.maxInuseSize >= stat.currentInuseSize, "heap statistics are reported");
     sceNpHeapDestroy(&heap);
+
     Require(heap.mspace == nullptr, "destroying clears the heap");
     Require(sceNpFreeKernelMemory(&memory) == 0 && memory.address == nullptr, "kernel memory is released");
     Require(sceNpFreeKernelMemory(nullptr) == NpNullObject, "freeing needs an object");
@@ -251,12 +150,153 @@ void TestHeaps() {
     Require(global->outOfMemoryError == NpOutOfMemory, "the global allocator reports the library's out-of-memory error");
     UseAllocator(global->allocator);
     sceNpArchTerm();
+
     UseAllocator(sceNpGlobalHeapGetAllocatorExPtr()->allocator);
     sceNpArchTerm();
 
     Require(sceNpIpc2ClientTerm() == NpIpcNotInitialized, "the ipc client must be started before it stops");
     Require(sceNpIpc2ClientInit() == 0 && sceNpIpc2ClientInit() == NpIpcAlreadyInitialized, "the ipc client starts once");
     Require(sceNpIpc2ClientTerm() == 0 && sceNpIpc2ClientInit() == 0 && sceNpIpc2ClientTerm() == 0, "the ipc client restarts");
+}
+
+struct AllocatorRecord {
+    std::array<std::uint8_t, 256> block {};
+    std::size_t size = 0;
+    void* released = nullptr;
+    bool fail = false;
+};
+
+void* APS5_VABI RecordAllocate(std::size_t size, void* context) {
+    auto* record = static_cast<AllocatorRecord*>(context);
+    record->size = size;
+    return record->fail ? nullptr : record->block.data();
+}
+
+void APS5_VABI RecordRelease(void* pointer, void* context) {
+    static_cast<AllocatorRecord*>(context)->released = pointer;
+}
+
+void TestObjects() {
+    AllocatorRecord record {};
+    NpAllocator allocator {RecordAllocate, nullptr, RecordRelease, &record};
+    void* object = _ZN3sce2np6ObjectnwEmR14SceNpAllocator(40, &allocator);
+    NpAllocator* stored = nullptr;
+    std::memcpy(&stored, record.block.data(), sizeof(stored));
+
+    Require(object == record.block.data() + 16 && record.size == 56 && stored == &allocator,
+        "an object is allocated behind a 16-byte header that keeps its allocator");
+    AllocatorRecord other {};
+    NpAllocator otherAllocator {RecordAllocate, nullptr, RecordRelease, &other};
+    _ZN3sce2np6ObjectdlEPvR14SceNpAllocator(object, &otherAllocator);
+
+    Require(record.released == record.block.data() && other.released == nullptr, "an object is freed through the allocator it was allocated with");
+    record.released = nullptr;
+    _ZN3sce2np6ObjectdaEPv(_ZN3sce2np6ObjectnaEmR14SceNpAllocator(0, &allocator));
+
+    Require(record.size == 16 && record.released == record.block.data(), "an array is allocated and freed the same way");
+    NpAllocatorEx allocatorEx {allocator, 0x1234};
+    record.released = nullptr;
+    object = _ZN3sce2np6ObjectnwEmR16SceNpAllocatorEx(8, &allocatorEx);
+    std::memcpy(&stored, record.block.data(), sizeof(stored));
+
+    Require(object == record.block.data() + 16 && stored == &allocatorEx.allocator, "an extended allocator keeps its own address in the header");
+    _ZN3sce2np6ObjectdaEPvR16SceNpAllocatorEx(object, &allocatorEx);
+    Require(record.released == record.block.data(), "an object from an extended allocator is freed through it");
+    record.released = nullptr;
+    _ZN3sce2np6ObjectdlEPv(_ZN3sce2np6ObjectnaEmR16SceNpAllocatorEx(8, &allocatorEx));
+    _ZN3sce2np6ObjectdlEPvR16SceNpAllocatorEx(nullptr, &allocatorEx);
+    _ZN3sce2np6ObjectdaEPvR14SceNpAllocator(nullptr, &allocator);
+
+    Require(record.released == record.block.data(), "freeing a null object does nothing");
+    record.fail = true;
+    Require(_ZN3sce2np6ObjectnwEmR14SceNpAllocator(8, &allocator) == nullptr && _ZN3sce2np6ObjectnwEmR16SceNpAllocatorEx(8, &allocatorEx) == nullptr,
+        "a failed allocation returns null");
+}
+
+void TestObjectsThroughStoredAllocator() {
+    AllocatorRecord record {};
+    NpAllocator allocator {RecordAllocate, nullptr, RecordRelease, &record};
+    NpAllocatorEx allocatorEx {allocator, 0x1234};
+    AllocatorRecord other {};
+    NpAllocator otherAllocator {RecordAllocate, nullptr, RecordRelease, &other};
+    NpAllocatorEx otherEx {otherAllocator, 0};
+
+    record.block.fill(0xAA);
+    void* object = _ZN3sce2np6ObjectnaEmR16SceNpAllocatorEx(24, &allocatorEx);
+    Require(object == record.block.data() + 16 && record.size == 40, "an extended array is allocated behind the header");
+    Require(std::all_of(record.block.begin() + 8, record.block.begin() + 16, [](std::uint8_t b) { return b == 0xAA; }),
+        "the second half of the header is left as the allocator returned it");
+    _ZN3sce2np6ObjectdlEPvR16SceNpAllocatorEx(object, &otherEx);
+    Require(record.released == record.block.data() && other.released == nullptr, "delete with an extended allocator frees through the stored one");
+
+    record.released = nullptr;
+    _ZN3sce2np6ObjectdaEPvR14SceNpAllocator(_ZN3sce2np6ObjectnwEmR14SceNpAllocator(8, &allocator), &otherAllocator);
+    Require(record.released == record.block.data() && other.released == nullptr, "delete[] with an allocator frees through the stored one");
+
+    record.released = nullptr;
+    _ZN3sce2np6ObjectdaEPvR16SceNpAllocatorEx(_ZN3sce2np6ObjectnwEmR16SceNpAllocatorEx(8, &allocatorEx), &otherEx);
+    Require(record.released == record.block.data() && other.released == nullptr, "delete[] with an extended allocator frees through the stored one");
+
+    Require(_ZN3sce2np6ObjectnwEmR14SceNpAllocator(SIZE_MAX - 15, &allocator) == record.block.data() + 16 && record.size == 0,
+        "the size plus the header wraps unchecked, so a succeeding allocator is asked for 0 bytes");
+
+    record.fail = true;
+    Require(_ZN3sce2np6ObjectnaEmR14SceNpAllocator(8, &allocator) == nullptr && _ZN3sce2np6ObjectnaEmR16SceNpAllocatorEx(8, &allocatorEx) == nullptr,
+        "a failed array allocation returns null");
+}
+
+void TestTitleIdObjects() {
+    NpTitleIdObject parsed {};
+    std::memset(&parsed, 0x77, sizeof(parsed));
+    Require(_ZN3sce2np9NpTitleId5ParseEPS1_PKc(&parsed, "WXYZ54321_07") == 0 && std::memcmp(parsed.titleId.data, "WXYZ54321_00\0\0\0", 16) == 0,
+        "parsing keeps the nine character code and resets the suffix to _00");
+    Require(_ZN3sce2np9NpTitleId5ParseEPS1_PKcm(&parsed, "WXYZ54321", 9) == NpTitleIdInvalid, "parsing needs the twelve character form");
+    Require(_ZN3sce2np9NpTitleId5ParseEPS1_PKc(&parsed, "WXYZ5432a_07") == NpTitleIdInvalid
+        && _ZN3sce2np9NpTitleId5ParseEPS1_PKc(&parsed, "WXY154321_07") == NpTitleIdInvalid
+        && _ZN3sce2np9NpTitleId5ParseEPS1_PKc(&parsed, "WXYZ54321-07") == NpTitleIdInvalid,
+        "parsing needs four letters, five digits, an underscore and two digits");
+    Require(std::memcmp(parsed.titleId.data, "WXYZ54321_00", 13) == 0, "a rejected title id leaves the object as it was");
+
+    NpTitleIdObject built {};
+    _ZN3sce2np9NpTitleIdC1Ev(&built);
+    Require(_ZNK3sce2np9NpTitleId7IsEmptyEv(&built) && built.vtable != nullptr, "a default title id is empty");
+    Require(_ZN3sce2np9NpTitleId20ConstructFromTitleIdEPS1_PKcm(&built, "wxyz54321", 9) == 0
+        && _ZN3sce2np9NpTitleId20ConstructFromTitleIdEPS1_PKc(&built, "WXYZ54321_00") == NpTitleIdInvalid,
+        "constructing takes only the nine character code");
+    Require(_ZN3sce2np9NpTitleId20ConstructFromTitleIdEPS1_PKc(&built, "WXYZ54321") == 0 && !_ZNK3sce2np9NpTitleId7IsEmptyEv(&built),
+        "a constructed title id is not empty");
+
+    char text[16];
+    std::memset(text, 'x', sizeof(text));
+    Require(_ZN3sce2np9NpTitleId5BuildERKS1_Pcm(&built, text, 12) == NpTitleIdBufferTooSmall && text[0] == 'x', "building needs 13 bytes");
+    Require(_ZN3sce2np9NpTitleId5BuildERKS1_Pcm(&built, text, 14) == 0 && std::strcmp(text, "WXYZ54321_00") == 0 && text[13] == '\0' && text[14] == 'x',
+        "building writes the title id and clears the rest of the buffer");
+
+    NpTitleIdObject copy {};
+    _ZN3sce2np9NpTitleIdC1ERKS1_(&copy, &parsed);
+    NpTitleId plain = parsed.titleId;
+    plain.data[11] = '9';
+    Require(_ZNK3sce2np9NpTitleId6EqualsERKS1_(&copy, &built) && _ZN3sce2npeqERKNS0_9NpTitleIdES3_(&copy, &built)
+        && _ZNK3sce2np9NpTitleId6EqualsEPKc(&copy, "WXYZ54321_00"), "equal title ids compare equal");
+    Require(_ZN3sce2npneERKNS0_9NpTitleIdERK12SceNpTitleId(&copy, &plain) && _ZN3sce2npneERK12SceNpTitleIdRKNS0_9NpTitleIdE(&plain, &copy),
+        "the suffix takes part in the comparison");
+    plain.data[12] = 'q';
+    plain.data[11] = '0';
+    Require(_ZNK3sce2np9NpTitleId6EqualsERK12SceNpTitleId(&copy, &plain), "only the first twelve characters are compared");
+
+    _ZN3sce2np9NpTitleIdC1ERK12SceNpTitleId(&copy, &plain);
+    _ZN3sce2np9NpTitleIdaSERKS1_(&built, &copy);
+    Require(built.titleId.data[12] == 'q', "assignment copies all sixteen bytes");
+    _ZN3sce2np9NpTitleId5ClearEv(&built);
+    Require(_ZNK3sce2np9NpTitleId7IsEmptyEv(&built) && built.titleId.data[12] == '\0', "clearing empties the title id");
+
+    AllocatorRecord record {};
+    NpAllocator allocator {RecordAllocate, nullptr, RecordRelease, &record};
+    auto* owned = static_cast<NpTitleIdObject*>(_ZN3sce2np6ObjectnwEmR14SceNpAllocator(sizeof(NpTitleIdObject), &allocator));
+    _ZN3sce2np9NpTitleIdC1Ev(owned);
+    using Destructor = void APS5_VABI (*)(NpTitleIdObject*);
+    reinterpret_cast<Destructor>(owned->vtable[1])(owned);
+    Require(record.released == record.block.data(), "the deleting destructor frees through the stored allocator");
 }
 
 struct CalloutRecord {
@@ -313,8 +353,10 @@ void TestCallouts() {
     for (int i = 0; i < 2000 && g_callouts.second == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     Require(g_callouts.first == 1 && g_callouts.second == 2, "callouts run in deadline order");
     sceNpCalloutTermCtx(&context);
+
     Require(context.initialized == 0, "terminating clears the context");
     sceNpCalloutTermCtx(&context);
+
 }
 
 bool Equals(const char* actual, const char* expected) {
@@ -361,6 +403,16 @@ void TestJsonText() {
     Require(sceNpUtilJsonEscape(escaped, sizeof(escaped), "yz", 2) == 0 && Equals(escaped, "xyz"), "escaping appends to the buffer");
     Require(sceNpUtilJsonEscape(escaped, 6, "a", 1) == NpUtilBufferTooSmall, "escaping needs room for one escape");
     Require(sceNpUtilJsonEscape(escaped, sizeof(escaped), nullptr, 1) == NpUtilInvalid, "escaping needs a source");
+    struct Guarded {
+        char buffer[16];
+        char canary[16];
+    } guarded{};
+    std::strcpy(guarded.buffer, "0123456789");
+    Require(sceNpUtilJsonEscape(guarded.buffer, sizeof(guarded.buffer), "\n\n\n", 3) == NpUtilBufferTooSmall && guarded.canary[0] == 0,
+        "escaping into a partly filled buffer counts the text already in it");
+    std::memset(guarded.buffer, 'x', sizeof(guarded.buffer));
+    Require(sceNpUtilJsonEscape(guarded.buffer, sizeof(guarded.buffer), "a", 1) == NpUtilBufferTooSmall && guarded.canary[0] == 0,
+        "escaping into a buffer without a terminator is refused");
 
     char text[32] = {};
     std::size_t length = 0;
@@ -373,6 +425,8 @@ void TestJsonText() {
         "a bad unicode escape is copied and reported");
     Require(sceNpUtilJsonUnescape(nullptr, sizeof(text), "abc", 3, &length) == 0 && length == 4, "a null buffer reports the size");
     Require(sceNpUtilJsonUnescape(text, 3, "abc", 3, &length) == NpUtilBufferTooSmall, "unescaping needs room for the terminator");
+    length = 0;
+    Require(sceNpUtilJsonUnescape(nullptr, 0, "abc", 3, &length) == 0 && length == 4, "a size query with no buffer and no size reports the size");
 
     char one[4] = {};
     std::size_t consumed = 0;
@@ -386,6 +440,8 @@ void TestJsonText() {
         "a cut UTF-8 character reports its full length");
     Require(sceNpUtilJsonGetOneChar(one, 1, "\xC3\xA9", 2, &length, &consumed) == NpUtilBufferTooSmall && length == 2,
         "a short buffer still reports the decoded size");
+    Require(sceNpUtilJsonGetOneChar(one, sizeof(one), "\\ud83dXXde00", 12, &length, &consumed) == NpUtilBufferTooSmall,
+        "a high surrogate without a second unicode escape is not combined");
 
     const char* character = nullptr;
     const char* japanese = "\xE6\x97\xA5" "a";
@@ -505,6 +561,11 @@ void TestHexAndCopies() {
     Require(sceNpStrParseHex("0AF", bytes, 2) == NpInvalidArgument, "odd hex is refused");
     Require(sceNpStrParseHex("0AFE", bytes, 1) == NpBufferTooSmall, "hex parsing checks the output size");
     Require(sceNpStrParseHex("0AG1", bytes, 2) == NpInvalidArgument, "non-hex characters are refused");
+    bytes[1] = 0xFF;
+    Require(sceNpStrParseHex("0A5G", bytes, 2) == NpInvalidArgument && bytes[0] == 0x0A && bytes[1] == 0x50,
+        "a valid high digit is stored before the low digit is refused");
+    bytes[1] = 0xFF;
+    Require(sceNpStrnParseHex("0AG5", 4, bytes, 2) == NpInvalidArgument && bytes[1] == 0xFF, "a refused high digit stores nothing");
     Require(sceNpStrnParseHex("DEADBEEF1234", 8, bytes, 4) == 0 && bytes[0] == 0xDE && bytes[3] == 0xEF, "a hex prefix is read");
 
     char copy[8] = {};
@@ -516,11 +577,73 @@ void TestHexAndCopies() {
 
 }
 
+void TestMemoryStreams() {
+    using Read = int(APS5_VABI*)(NpMemoryStreamReader*, void*, void*, std::size_t, std::size_t*);
+    using Write = int(APS5_VABI*)(NpMemoryStreamWriter*, void*, const void*, std::size_t, std::size_t*);
+    using Destroy = void(APS5_VABI*)(void*);
+
+    const char text[] = "abcdefgh";
+    NpMemoryStreamReader reader;
+    std::memset(&reader, 0x77, sizeof(reader));
+    _ZN3sce2np18MemoryStreamReaderC1EPKvm(&reader, text, 8);
+    Require(reader.data == text && reader.size == 8 && reader.position == 0, "a reader starts at the beginning of its buffer");
+    std::array<char, 8> out {};
+    std::size_t count = 99;
+    Require(reinterpret_cast<Read>(reader.vtable[2])(&reader, nullptr, out.data(), 5, &count) == 0 && count == 5 &&
+                std::memcmp(out.data(), "abcde", 5) == 0 && reader.position == 5,
+        "a read through the vtable copies the requested bytes");
+    out.fill(0);
+    Require(_ZN3sce2np18MemoryStreamReader4ReadEPNS0_6HandleEPvmPm(&reader, nullptr, out.data(), 8, &count) == 0 && count == 3 &&
+                std::memcmp(out.data(), "fgh", 3) == 0 && out[3] == 0 && reader.position == 8,
+        "a read past the end is cut to what remains");
+    count = 99;
+    Require(_ZN3sce2np18MemoryStreamReader4ReadEPNS0_6HandleEPvmPm(&reader, nullptr, out.data(), 8, &count) == 0 && count == 0,
+        "an exhausted reader reports 0 bytes");
+    reader.position = 12;
+    Require(_ZN3sce2np18MemoryStreamReader4ReadEPNS0_6HandleEPvmPm(&reader, nullptr, out.data(), 8, &count) == 0 && count == 0 &&
+                reader.position == 12,
+        "a position beyond the size reads nothing");
+
+    std::array<char, 6> buffer {};
+    NpMemoryStreamWriter writer;
+    _ZN3sce2np18MemoryStreamWriterC2EPvm(&writer, buffer.data(), 6);
+    Require(reinterpret_cast<Write>(writer.vtable[2])(&writer, nullptr, "abcd", 4, &count) == 0 && count == 4 && writer.position == 4,
+        "a write through the vtable stores the bytes");
+    count = 99;
+    Require(_ZN3sce2np18MemoryStreamWriter5WriteEPNS0_6HandleEPKvmPm(&writer, nullptr, "xyz", 3, &count) == NpStreamBufferTooSmall &&
+                count == 99 && writer.position == 4,
+        "a write that does not fit is refused whole");
+    Require(_ZN3sce2np18MemoryStreamWriter5WriteEPNS0_6HandleEPKvmPm(&writer, nullptr, "xy", 2, nullptr) == 0 && writer.position == 6 &&
+                std::memcmp(buffer.data(), "abcdxy", 6) == 0,
+        "a write may fill the buffer exactly without a count pointer");
+    _ZN3sce2np18MemoryStreamWriterC1EPvm(&writer, buffer.data(), 0);
+    writer.position = 3;
+    Require(_ZN3sce2np18MemoryStreamWriter5WriteEPNS0_6HandleEPKvmPm(&writer, nullptr, "a", 1, &count) == NpStreamBufferTooSmall &&
+                _ZN3sce2np18MemoryStreamWriter5WriteEPNS0_6HandleEPKvmPm(&writer, nullptr, "", 0, &count) == 0 && writer.position == 3,
+        "a writer of size 0 has no room whatever its position");
+    _ZN3sce2np18MemoryStreamWriterC1EPvm(&writer, nullptr, 2);
+    Require(_ZN3sce2np18MemoryStreamWriter5WriteEPNS0_6HandleEPKvmPm(&writer, nullptr, "abcdef", 6, &count) == 0 && count == 6 &&
+                _ZN3sce2np18MemoryStreamWriter5WriteEPNS0_6HandleEPKvmPm(&writer, nullptr, "ab", 2, &count) == 0 && writer.position == 8,
+        "a writer without a buffer only counts");
+
+    reinterpret_cast<Destroy>(reader.vtable[0])(&reader);
+    _ZN3sce2np18MemoryStreamReaderD2Ev(&reader);
+    Require(reader.data == text && reader.size == 8 && reader.position == 12, "the reader destructors leave the object untouched");
+    reinterpret_cast<Destroy>(writer.vtable[0])(&writer);
+    _ZN3sce2np18MemoryStreamWriterD2Ev(&writer);
+    Require(writer.data == nullptr && writer.size == 2 && writer.position == 8, "the writer destructors leave the object untouched");
+}
+
 int main() {
     TestAtomics();
     TestSemaphoresAndFlags();
+    TestSharedEventFlags();
     TestThreads();
     TestHeaps();
+    TestObjects();
+    TestObjectsThroughStoredAllocator();
+    TestMemoryStreams();
+    TestTitleIdObjects();
     TestBase64();
     TestNumbers();
     TestHexAndCopies();
