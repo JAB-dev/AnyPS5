@@ -1,10 +1,12 @@
+#include "prx/libSceKeyboard/include/Api.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libSceKeyboard/include/KeyboardState.hpp"
 
-struct KeyboardDeviceInfo;
-struct KeyboardProcessFocus;
-
 extern "C" {
+
+int APS5_VABI sceDbgKeyboardGetHandle() {
+    NotImplemented_nid_no_patch(__func__);
+}
 
 int APS5_VABI sceKeyboardInit(void) {
     return Keyboard::Initialize();
