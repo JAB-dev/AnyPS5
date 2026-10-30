@@ -1,14 +1,10 @@
+#include "prx/libSceAgcDriver/include/AgcDriver.hpp"
 #include <cstdint>
 #include <cstddef>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
 extern "C" {
-
-int APS5_VABI sceAgcDriverAcquireRazorACQ(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
 
 int APS5_VABI sceAgcDriverCreateQueue(void) {
     NotImplemented_nid_no_patch(__func__);
@@ -31,11 +27,6 @@ int APS5_VABI sceAgcDriverDebugHardwareStatus(void) {
 }
 
 int APS5_VABI sceAgcDriverDestroyQueue(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceAgcDriverGetPaDebugInterfaceVersion(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -65,11 +56,6 @@ int APS5_VABI sceAgcDriverIDHSSubmit(void) {
     return 0;
 }
 
-int APS5_VABI sceAgcDriverModuleRegistration(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceAgcDriverNotifyDefaultStates(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -86,11 +72,6 @@ int APS5_VABI sceAgcDriverPatchClearState(void) {
 }
 
 int APS5_VABI sceAgcDriverSetFlip(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceAgcDriverSetHsOffchipParamDirect(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -115,27 +96,12 @@ int APS5_VABI sceAgcDriverSetupRegisterShadow(void) {
     return 0;
 }
 
-int APS5_VABI sceAgcDriverSubmitMultiCommandBuffersDirect(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceAgcDriverSubmitToHDRScopesACQ(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
-int APS5_VABI sceAgcDriverSubmitToRazorACQ(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceAgcDriverSuspendPointSubmit(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceAgcDriverSuspendPointSubmitDirect(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
