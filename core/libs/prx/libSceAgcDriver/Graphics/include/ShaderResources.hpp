@@ -155,6 +155,7 @@ struct ImageTableReuseCounts {
     std::uint64_t writesMade = 0;
 };
 ImageTableReuseCounts ImageTableReuses();
+std::uint64_t SampledTexturesCleared();
 std::uint64_t SampledLookupKeyScans();
 
 struct PresyncSurface {
@@ -186,6 +187,7 @@ public:
     VkDescriptorSetLayout FragmentLayout() const { return fragment.layout; }
     bool SplitSets() const { return splitSets; }
     PipelineSetLayouts SetLayouts() const { return {_layout, fragment.layout, splitSets, layoutKey, fragmentLayoutKey}; }
+    void RequireGuestBuffers() const { requireGuestBuffers(); }
     void Bind(VkCommandBuffer commands, VkPipelineBindPoint bindPoint, VkPipelineLayout layout) const;
     struct DrawBindings {
         DrawBindings() = default;
