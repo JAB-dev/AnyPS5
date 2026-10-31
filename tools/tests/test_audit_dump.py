@@ -181,6 +181,27 @@ class AuditDumpTests(unittest.TestCase):
         audit.assert_not_called()
         self.assertTrue(stale.exists())
 
+    def test_output_directory_creation_failure_stops_before_conversion(self):
+        work = self.root / "work"
+        original_mkdir = Path.mkdir
+
+        def mkdir(path, *args, **kwargs):
+            if path == work / "output":
+                raise PermissionError("permission denied")
+            return original_mkdir(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "mkdir", mkdir), mock.patch.object(audit_dump, "prepare") as prepare, \
+                mock.patch.object(audit_dump, "convert") as convert, mock.patch.object(audit_dump.import_audit, "main") as audit:
+            code, errors = self.run_main(self.dump, "--relinker", self.relinker, "--libs", "libs", "--work", work)
+        self.assertEqual(code, 2)
+        self.assertIn("cannot create", errors)
+        self.assertIn(str(work / "output"), errors)
+        self.assertIn("permission denied", errors)
+        prepare.assert_not_called()
+        convert.assert_not_called()
+        audit.assert_not_called()
+        self.assertEqual((self.dump / "eboot.bin").read_bytes(), SELF)
+
     @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "needs POSIX permissions and a non-root user")
     def test_a_non_writable_stale_directory_stops_before_conversion(self):
         work = self.root / "work"
@@ -207,6 +228,50 @@ class AuditDumpTests(unittest.TestCase):
         self.assertIn("still exists", errors)
         convert.assert_not_called()
         audit.assert_not_called()
+
+    def test_work_cleanup_refuses_relinker_or_libraries_in_generated_directories(self):
+        for generated in ("source", "output"):
+            for kind in ("relinker", "libs"):
+                with self.subTest(generated=generated, kind=kind), tempfile.TemporaryDirectory() as directory:
+                    work = Path(directory)
+                    target = work / generated / "nested"
+                    target.mkdir(parents=True)
+                    marker = target / "keep.prx"
+                    marker.write_bytes(b"keep")
+                    relinker = marker if kind == "relinker" else self.relinker
+                    libs = target if kind == "libs" else self.root / "libs"
+                    with mock.patch.object(audit_dump, "prepare") as prepare, \
+                            mock.patch.object(audit_dump, "convert") as convert, \
+                            self.assertRaises(SystemExit) as error:
+                        self.run_main(self.dump, "--relinker", relinker, "--libs", libs, "--work", work)
+                    self.assertEqual(error.exception.code, 2)
+                    self.assertEqual(marker.read_bytes(), b"keep")
+                    prepare.assert_not_called()
+                    convert.assert_not_called()
+
+    def test_work_cleanup_refuses_outward_input_links(self):
+        for generated in ("source", "output"):
+            for kind in ("relinker", "libs"):
+                with self.subTest(generated=generated, kind=kind), tempfile.TemporaryDirectory() as directory:
+                    work = Path(directory)
+                    nested = work / generated / "nested"
+                    nested.mkdir(parents=True)
+                    outside = self.relinker if kind == "relinker" else self.root
+                    link = nested / "input-link"
+                    try:
+                        os.symlink(outside, link, target_is_directory=kind == "libs")
+                    except OSError:
+                        self.skipTest("symbolic links unavailable")
+                    relinker = link if kind == "relinker" else self.relinker
+                    libs = link if kind == "libs" else self.root
+                    with mock.patch.object(audit_dump, "prepare") as prepare, \
+                            mock.patch.object(audit_dump, "convert") as convert, \
+                            self.assertRaises(SystemExit) as error:
+                        self.run_main(self.dump, "--relinker", relinker, "--libs", libs, "--work", work)
+                    self.assertEqual(error.exception.code, 2)
+                    self.assertTrue(link.is_symlink())
+                    prepare.assert_not_called()
+                    convert.assert_not_called()
 
     def test_symbolic_link_loops_are_usage_errors_before_input_is_removed(self):
         loop = self.root / "loop"
