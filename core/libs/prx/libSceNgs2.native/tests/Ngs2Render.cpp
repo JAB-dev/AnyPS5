@@ -999,6 +999,26 @@ static void TestPortGainRampFromZeroLikePs5() {
     ExpectRampFrames(rig.Render(), 1, 0.25f, 1.0f, 0.0f, 256);
 }
 
+static void TestMutedPatchCycleRenders() {
+    const auto firstBuffer = usedBuffers;
+    const auto system = CreateSystem();
+    const auto first = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SUBMIXER));
+    const auto second = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SUBMIXER));
+    Control(first, SCE_NGS2_SUBMIXER_VOICE_PARAM_SETUP, Ngs2SubmixerVoiceSetupParam{{}, 1, 0});
+    Control(second, SCE_NGS2_SUBMIXER_VOICE_PARAM_SETUP, Ngs2SubmixerVoiceSetupParam{{}, 1, 0});
+    Patch(first, second);
+    Patch(second, first);
+    Control(first, SCE_NGS2_VOICE_PARAM_PORT_VOLUME, Ngs2VoicePortVolumeParam{{}, 0, 0.0f});
+    Control(second, SCE_NGS2_VOICE_PARAM_PORT_VOLUME, Ngs2VoicePortVolumeParam{{}, 0, 0.0f});
+    Event(first, SCE_NGS2_VOICE_EVENT_PLAY);
+    Event(second, SCE_NGS2_VOICE_EVENT_PLAY);
+    std::vector<float> out(Grain, -1.0f);
+    const Ngs2RenderBufferInfo info{out.data(), out.size() * sizeof(float), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 1};
+    Require(sceNgs2SystemRender(system, &info, 1) == SCE_NGS2_OK);
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+    ResetBuffers(firstBuffer);
+}
+
 static void TestPortGainFusedSumLikePs5() {
     GainRig rig(256, 2, 9830, 256 * 4);
     rig.Levels(0, {0.3f, 0.61f, 0.0f, 0.0f});
@@ -2505,6 +2525,7 @@ int main() {
     TestPortGainRampResetsLikePs5();
     TestPortGainRampFromZeroLikePs5();
     TestPortGainFusedSumLikePs5();
+    TestMutedPatchCycleRenders();
 
     TestMasteringGain();
     TestMatrixLevelClamp();

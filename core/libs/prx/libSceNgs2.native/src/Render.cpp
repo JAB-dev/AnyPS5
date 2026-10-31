@@ -236,6 +236,10 @@ float Ngs2FixedDownmixLevel(std::uint32_t sourceChannels, std::uint32_t source, 
     return RowLevel(rows[source], destChannels, dest);
 }
 
+static bool PortMixesAudio(const Ngs2Port& port) {
+    return port.volume != 0.0f || std::any_of(port.mixedGains.begin(), port.mixedGains.end(), [](float gain) { return gain != 0.0f; });
+}
+
 static std::uint32_t PortOutputs(const Ngs2Voice& voice, const Ngs2Voice& source, const Ngs2Port& port) {
     const auto* matrix = port.matrix < 0 || source.matrices[port.matrix].empty() ? nullptr : &source.matrices[port.matrix];
     const auto channels = voice.InputChannels();
@@ -288,7 +292,7 @@ static void MixInputs(Ngs2Voice& voice, const std::vector<Ngs2Voice*>& voices, s
         for (std::size_t p = 0; p < source->ports.size(); p++) {
             auto& port = source->ports[p];
             if (port.dest != &voice) continue;
-            if (port.volume == 0.0f && std::none_of(port.mixedGains.begin(), port.mixedGains.end(), [](float gain) { return gain != 0.0f; })) {
+            if (!PortMixesAudio(port)) {
                 if (source->channels != 0) {
                     port.mixedOutputs = PortOutputs(voice, *source, port);
                     port.mixedSources = source->channels;
@@ -439,7 +443,7 @@ static void RenderScheduled(Ngs2System& system, const std::vector<Ngs2Voice*>& v
             for (std::size_t j = 0; j < voices.size(); ++j) {
                 if (!ScheduledVoice(*voices[j])) continue;
                 for (const auto& port : voices[j]->ports) {
-                    if (port.dest == voices[i]) value = std::max(value, self(self, j) + 1);
+                    if (port.dest == voices[i] && PortMixesAudio(port)) value = std::max(value, self(self, j) + 1);
                 }
             }
         }
